@@ -269,37 +269,50 @@ void UiModel::Impl::BumpThreadActivity(const std::string& p_ProfileId, const std
 {
   if (p_TopicId.empty()) return;
 
+  const int64_t stamp = TimeUtil::GetCurrentTimeMSec();
+  m_ThreadActivityStamps[p_ProfileId][p_ChatId][p_TopicId] = stamp;
+  SortThreadVec(p_ProfileId, p_ChatId);
+}
+
+void UiModel::Impl::SortThreadVec(const std::string& p_ProfileId, const std::string& p_ChatId)
+{
   std::vector<ChatThreadInfo>& threadVec = m_ThreadVec[p_ProfileId][p_ChatId];
-  for (size_t i = 1; i < threadVec.size(); ++i) // the General entry stays first
+  const std::unordered_map<std::string, int64_t>& stamps = m_ThreadActivityStamps[p_ProfileId][p_ChatId];
+
+  // General first, then by most recent local activity, keeping the server
+  // snapshot order as a stable base
+  std::stable_sort(threadVec.begin(), threadVec.end(),
+                   [&](const ChatThreadInfo& lhs, const ChatThreadInfo& rhs) -> bool
   {
-    if (threadVec.at(i).id == p_TopicId)
+    if (lhs.isGeneral != rhs.isGeneral) return lhs.isGeneral;
+
+    auto lhsIt = stamps.find(lhs.id);
+    auto rhsIt = stamps.find(rhs.id);
+    const int64_t lhsStamp = (lhsIt != stamps.end()) ? lhsIt->second : 0;
+    const int64_t rhsStamp = (rhsIt != stamps.end()) ? rhsIt->second : 0;
+    return (lhsStamp > rhsStamp);
+  });
+
+  // keep the selection index pointing at the same thread
+  const std::string& currentThreadId = m_CurrentThread[p_ProfileId][p_ChatId];
+  int& currentThreadIndex = m_CurrentThreadIndex[p_ProfileId][p_ChatId];
+  for (size_t i = 0; i < threadVec.size(); ++i)
+  {
+    if (threadVec.at(i).id == currentThreadId)
     {
-      if (i != 1)
-      {
-        // move the thread up to the most recent activity position
-        const ChatThreadInfo threadInfo = threadVec.at(i);
-        threadVec.erase(threadVec.begin() + i);
-        threadVec.insert(threadVec.begin() + 1, threadInfo);
-
-        // keep the selection index pointing at the same thread
-        const std::string& currentThreadId = m_CurrentThread[p_ProfileId][p_ChatId];
-        int& currentThreadIndex = m_CurrentThreadIndex[p_ProfileId][p_ChatId];
-        if (currentThreadId == p_TopicId)
-        {
-          currentThreadIndex = 1;
-        }
-        else if ((currentThreadIndex > 0) && (currentThreadIndex < (int)i))
-        {
-          // threads between the new position and the moved thread shift down
-          ++currentThreadIndex;
-        }
-
-        m_ThreadInfosUpdateTime = TimeUtil::GetCurrentTimeMSec();
-      }
-
-      return;
+      currentThreadIndex = (int)i;
+      break;
     }
   }
+
+  m_ThreadInfosUpdateTime = TimeUtil::GetCurrentTimeMSec();
+}
+
+void UiModel::Impl::ScheduleThreadsRefresh(const std::string& p_ProfileId, const std::string& p_ChatId)
+{
+  // refresh the thread snapshot after a delay, letting in-flight read marking
+  // settle first, so unread badges reflect the just-read state
+  m_ThreadsRefreshAtMs[p_ProfileId][p_ChatId] = TimeUtil::GetCurrentTimeMSec() + 750;
 }
 
 void UiModel::Impl::SelectThreadById(const std::string& p_ProfileId, const std::string& p_ChatId,
@@ -430,20 +443,9 @@ void UiModel::Impl::UpdateThreadInfos(const std::string& p_ProfileId, const std:
   // the menu vec is the General entry followed by the notified topics
   m_ThreadVec[p_ProfileId][p_ChatId] = ThreadUtil::BuildThreadInfos(p_NewThreadInfos);
 
-  // the snapshot may reorder topics; keep the selection index pointing at the
-  // selected thread's current position
-  const std::string& currentThreadId = m_CurrentThread[p_ProfileId][p_ChatId];
-  int& currentThreadIndex = m_CurrentThreadIndex[p_ProfileId][p_ChatId];
-  currentThreadIndex = 0;
-  const std::vector<ChatThreadInfo>& threadVec = m_ThreadVec[p_ProfileId][p_ChatId];
-  for (size_t i = 0; i < threadVec.size(); ++i)
-  {
-    if (threadVec.at(i).id == currentThreadId)
-    {
-      currentThreadIndex = (int)i;
-      break;
-    }
-  }
+  // apply the locally tracked activity ordering, which persists across
+  // snapshot rebuilds
+  SortThreadVec(p_ProfileId, p_ChatId);
 
   m_ThreadInfosUpdateTime = TimeUtil::GetCurrentTimeMSec();
 }
@@ -1228,6 +1230,14 @@ void UiModel::Impl::MarkRead(const std::string& p_ProfileId, const std::string& 
   markMessageReadRequest->msgId = p_MsgId;
   markMessageReadRequest->senderId = senderId;
   SendProtocolRequest(p_ProfileId, markMessageReadRequest);
+
+  // thread unread badges only refresh via a full thread snapshot, so schedule
+  // a debounced refresh after read marking
+  auto mit2 = messages.find(p_MsgId);
+  if ((mit2 != messages.end()) && !mit2->second.topicId.empty())
+  {
+    ScheduleThreadsRefresh(p_ProfileId, p_ChatId);
+  }
 
   UpdateChatInfoIsUnread(p_ProfileId, p_ChatId);
 
@@ -2136,6 +2146,11 @@ void UiModel::Impl::MessageHandler(std::shared_ptr<ServiceMessage> p_ServiceMess
 
             // activity bumps the thread to the top of the menu
             BumpThreadActivity(profileId, chatId, chatMessage.topicId);
+            if (!chatMessage.topicId.empty())
+            {
+              // schedule a thread snapshot refresh so new unread badges appear
+              ScheduleThreadsRefresh(profileId, chatId);
+            }
 
             if (newMessagesNotify->sequence)
             {
@@ -2940,6 +2955,23 @@ void UiModel::Impl::ProcessTimers()
         if (SetCurrentChatIndexIfNotSet())
         {
           LOG_TRACE("set current chat on old msg sync timeout");
+        }
+      }
+    }
+
+    // flush pending thread snapshot refreshes (unread badge updates after
+    // read marking and new messages)
+    for (auto& profileEntry : m_ThreadsRefreshAtMs)
+    {
+      for (auto& chatEntry : profileEntry.second)
+      {
+        if ((chatEntry.second != 0) && (nowTimeMs >= chatEntry.second))
+        {
+          LOG_TRACE("threads refresh %s %s", profileEntry.first.c_str(), chatEntry.first.c_str());
+          std::shared_ptr<GetThreadsRequest> getThreadsRequest = std::make_shared<GetThreadsRequest>();
+          getThreadsRequest->chatId = chatEntry.first;
+          SendProtocolRequest(profileEntry.first, getThreadsRequest);
+          chatEntry.second = 0;
         }
       }
     }
