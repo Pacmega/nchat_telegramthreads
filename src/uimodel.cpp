@@ -123,14 +123,32 @@ void UiModel::Impl::TerminalControlResume()
 void UiModel::Impl::OnKeyDecreaseListWidth()
 {
   AnyUserKeyInput();
-  m_View->DecreaseListWidth();
+  if (m_ThreadsFocus && IsThreadedChat(m_CurrentChat.first, m_CurrentChat.second))
+  {
+    // no-op when the panel is already collapsed
+    m_View->DecreaseThreadsWidth();
+  }
+  else
+  {
+    m_View->DecreaseListWidth();
+  }
+
   ReinitView();
 }
 
 void UiModel::Impl::OnKeyIncreaseListWidth()
 {
   AnyUserKeyInput();
-  m_View->IncreaseListWidth();
+  if (m_ThreadsFocus && IsThreadedChat(m_CurrentChat.first, m_CurrentChat.second))
+  {
+    // growing from a collapsed panel re-enables it
+    m_View->IncreaseThreadsWidth();
+  }
+  else
+  {
+    m_View->IncreaseListWidth();
+  }
+
   ReinitView();
 }
 
@@ -3317,6 +3335,13 @@ void UiModel::Impl::OnCurrentChatChanged()
   RequestUserStatusCurrentChat();
   RequestUserStatusNextChat();
   ProtocolSetCurrentChat();
+
+  // the threads panel follows the threaded state of the current chat
+  if (m_View->GetThreadsEnabled() != (IsThreadedChat(m_CurrentChat.first, m_CurrentChat.second) &&
+                                      m_View->GetListEnabled()))
+  {
+    ReinitView();
+  }
 }
 
 void UiModel::Impl::ProbeCurrentChatThreads()

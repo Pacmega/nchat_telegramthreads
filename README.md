@@ -964,6 +964,7 @@ This configuration file holds user interface key bindings. Default content:
     toggle_emoji=KEY_CTRLY
     toggle_help=KEY_CTRLG
     toggle_list=KEY_CTRLL
+    toggle_threads=KEY_CTRLB
     toggle_top=KEY_NONE
     transfer=KEY_CTRLT
     unread_chat=KEY_CTRLF

@@ -55,6 +55,7 @@ void UiListView::Draw()
 
   int index = std::max(0, m_Model->GetCurrentChatIndexLocked());
   const std::vector<std::pair<std::string, std::string>>& p_ChatVec = m_Model->GetChatVecLocked();
+  const bool threadsFocus = m_Model->GetThreadsFocusLocked();
 
   const bool emojiEnabled = m_Model->GetEmojiEnabledLocked();
   std::vector<std::string> names;
@@ -80,7 +81,7 @@ void UiListView::Draw()
     int last = std::min((height + offset), count);
     for (int i = offset; i < last; ++i)
     {
-      if (i == index)
+      if (!threadsFocus && (i == index))
       {
         wattroff(m_PaddedWin, attribute);
         wattron(m_PaddedWin, attributeSelected);
@@ -112,7 +113,7 @@ void UiListView::Draw()
         wattron(m_PaddedWin, colorPair);
       }
 
-      if (i == index)
+      if (!threadsFocus && (i == index))
       {
         wattroff(m_PaddedWin, attributeSelected);
         wattron(m_PaddedWin, attribute);

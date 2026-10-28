@@ -17,6 +17,7 @@ class UiListBorderView;
 class UiModel;
 class UiScreen;
 class UiStatusView;
+class UiThreadsView;
 class UiTopView;
 
 class UiView
@@ -47,6 +48,9 @@ public:
   int GetScreenHeight();
   void DecreaseListWidth();
   void IncreaseListWidth();
+  bool GetThreadsEnabled();
+  void DecreaseThreadsWidth();
+  void IncreaseThreadsWidth();
 
 protected:
   void Init();
@@ -62,6 +66,7 @@ private:
   std::shared_ptr<UiEntryView> m_UiEntryView;
   std::shared_ptr<UiStatusView> m_UiStatusView;
   std::shared_ptr<UiListView> m_UiListView;
+  std::shared_ptr<UiThreadsView> m_UiThreadsView;
   std::shared_ptr<UiListBorderView> m_UiListBorderView;
   std::shared_ptr<UiHistoryView> m_UiHistoryView;
 
@@ -71,9 +76,10 @@ private:
   const bool m_EntryEnabled = true;
   bool m_StatusEnabled = true;
   bool m_ListEnabled = true;
-  bool m_ThreadsDirty = false;
+  bool m_ThreadsEnabled = false;
   const bool m_HistoryEnabled = true;
   int m_ListWidth = 14;
+  int m_ThreadsWidth = 14;
   int m_EntryHeight = 4;
 
   friend class UiModel;

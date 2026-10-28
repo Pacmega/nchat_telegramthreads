@@ -76,6 +76,7 @@ void UiConfig::Init()
     { "terminal_bell_active", "0" },
     { "terminal_bell_inactive", "1" },
     { "terminal_title", "" },
+    { "threads_width", "14" },
     { "top_enabled", "1" },
     { "top_show_version", "0" },
     { "transfer_send_caption", "1" },

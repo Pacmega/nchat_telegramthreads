@@ -8,6 +8,7 @@
 #include "uiview.h"
 
 #include "log.h"
+#include "uimodel.h"
 #include "uiconfig.h"
 #include "uientryview.h"
 #include "uihelpview.h"
@@ -17,6 +18,7 @@
 #include "uilistview.h"
 #include "uiscreen.h"
 #include "uistatusview.h"
+#include "uithreadsview.h"
 #include "uitopview.h"
 #include "uiviewbase.h"
 
@@ -29,6 +31,7 @@ UiView::UiView(UiModel* p_UiModel)
   m_StatusEnabled = UiConfig::GetBool("status_enabled");
   m_TopEnabled = UiConfig::GetBool("top_enabled");
   m_ListWidth = UiConfig::GetNum("list_width");
+  m_ThreadsWidth = std::max(0, UiConfig::GetNum("threads_width"));
   m_EntryHeight = std::max(1, UiConfig::GetNum("entry_height"));
 }
 
@@ -39,6 +42,7 @@ UiView::~UiView()
   UiConfig::SetBool("list_enabled", m_ListEnabled);
   UiConfig::SetBool("top_enabled", m_TopEnabled);
   UiConfig::SetNum("list_width", m_ListWidth);
+  UiConfig::SetNum("threads_width", m_ThreadsWidth);
 }
 
 void UiView::Init()
@@ -92,10 +96,23 @@ void UiView::Init()
   }
 
   {
-    int w = 1;
+    const std::pair<std::string, std::string>& currentChat = m_UiModel->GetCurrentChatLocked();
+    m_ThreadsEnabled = m_ListEnabled && (m_ThreadsWidth > 0) &&
+      m_UiModel->IsThreadedChatLocked(currentChat.first, currentChat.second);
+    int w = m_ThreadsEnabled ? m_ThreadsWidth : 0;
     int h = m_UiScreen->H() - m_UiTopView->H() - m_UiHelpView->H() -
       m_UiEntryView->H() - m_UiStatusView->H();
     int x = m_UiListView->X() + m_UiListView->W();
+    int y = m_UiTopView->H();
+    UiViewParams params(x, y, w, h, m_ThreadsEnabled, m_UiModel);
+    m_UiThreadsView = std::make_shared<UiThreadsView>(params);
+  }
+
+  {
+    int w = 1;
+    int h = m_UiScreen->H() - m_UiTopView->H() - m_UiHelpView->H() -
+      m_UiEntryView->H() - m_UiStatusView->H();
+    int x = m_UiListView->X() + m_UiListView->W() + (m_ThreadsEnabled ? m_ThreadsWidth : 0);
     int y = m_UiTopView->H();
     UiViewParams params(x, y, w, h, m_ListEnabled && (m_ListWidth > 0), m_UiModel);
     m_UiListBorderView = std::make_shared<UiListBorderView>(params);
@@ -118,6 +135,7 @@ void UiView::Draw()
   m_UiHelpView->Draw();
   m_UiStatusView->Draw();
   m_UiListView->Draw();
+  m_UiThreadsView->Draw();
   m_UiListBorderView->Draw();
   m_UiHistoryView->Draw();
   m_UiEntryView->Draw();
@@ -177,7 +195,7 @@ void UiView::SetListDirty(bool p_Dirty)
 
 void UiView::SetThreadsDirty(bool p_Dirty)
 {
-  m_ThreadsDirty = p_Dirty;
+  m_UiThreadsView->SetDirty(p_Dirty);
 }
 
 void UiView::SetStatusDirty(bool p_Dirty)
@@ -238,5 +256,26 @@ void UiView::IncreaseListWidth()
   if (m_ListWidth < m_UiScreen->W())
   {
     ++m_ListWidth;
+  }
+}
+
+bool UiView::GetThreadsEnabled()
+{
+  return m_ThreadsEnabled;
+}
+
+void UiView::DecreaseThreadsWidth()
+{
+  if (m_ThreadsWidth > 0)
+  {
+    --m_ThreadsWidth;
+  }
+}
+
+void UiView::IncreaseThreadsWidth()
+{
+  if (m_ThreadsWidth < m_UiScreen->W())
+  {
+    ++m_ThreadsWidth;
   }
 }

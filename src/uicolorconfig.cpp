@@ -55,6 +55,12 @@ void UiColorConfig::Init()
     { "listborder_attr", "" },
     { "listborder_color_bg", "" },
     { "listborder_color_fg", "" },
+    { "threads_attr", "" },
+    { "threads_attr_selected", "reverse" },
+    { "threads_color_bg", "" },
+    { "threads_color_fg", "" },
+    { "threads_color_unread_fg", "" },
+    { "threads_color_unread_bg", "" },
 
     { "history_text_attr", "" },
     { "history_text_attr_selected", "reverse" },
