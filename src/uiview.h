@@ -35,6 +35,7 @@ public:
   void SetListEnabled(bool p_Enabled);
   bool GetListEnabled();
   void SetListDirty(bool p_Dirty);
+  void SetThreadsDirty(bool p_Dirty);
   void SetStatusDirty(bool p_Dirty);
   void SetHistoryDirty(bool p_Dirty);
   void SetHelpDirty(bool p_Dirty);
@@ -70,6 +71,7 @@ private:
   const bool m_EntryEnabled = true;
   bool m_StatusEnabled = true;
   bool m_ListEnabled = true;
+  bool m_ThreadsDirty = false;
   const bool m_HistoryEnabled = true;
   int m_ListWidth = 14;
   int m_EntryHeight = 4;

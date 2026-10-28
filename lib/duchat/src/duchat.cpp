@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <iostream>
+#include <iterator>
 #include <map>
 
 #include <sys/stat.h>
@@ -18,6 +19,8 @@
 #include "strutil.h"
 
 static const std::string s_GroupId = "The Office_0";
+static const std::string s_ThreadedBotId = "Threadbot_0";
+static const std::string s_ForbiddenBotId = "Forbidden_0";
 
 extern "C" DuChat* CreateDuChat()
 {
@@ -41,7 +44,8 @@ std::string DuChat::GetProfileId() const
 bool DuChat::HasFeature(ProtocolFeature p_ProtocolFeature) const
 {
   static int customFeatures =
-    FeatureAutoGetContactsOnLogin;
+    FeatureAutoGetContactsOnLogin |
+    FeatureThreads;
   return (p_ProtocolFeature & customFeatures);
 }
 
@@ -375,6 +379,67 @@ void DuChat::PerformRequest(std::shared_ptr<RequestMessage> p_RequestMessage)
           }
         }
 
+        // Threaded bot chat; messages carry topic ids, the General topic
+        // messages have none (as in threaded bot chats on Telegram)
+        {
+          t = 1237992000;
+          ChatInfo chatInfo;
+          chatInfo.id = s_ThreadedBotId;
+          chatInfo.lastMessageTime = (t * 1000);
+          newChatsNotify->chatInfos.push_back(chatInfo);
+
+          ContactInfo contactInfo;
+          contactInfo.id = s_ThreadedBotId;
+          contactInfo.name = "Threaded Bot";
+          newContactsNotify->contactInfos.push_back(contactInfo);
+
+          const std::vector<std::pair<std::string, std::string>> threadMessages =
+          {
+            { "35", "This message belongs to the first topic." },
+            { "35", "Another message in the first topic." },
+            { "", "This message belongs to General." },
+            { "36", "A message in the second topic." },
+          };
+
+          for (auto& message : threadMessages)
+          {
+            ChatMessage chatMessage;
+            chatMessage.id = s_ThreadedBotId + "_" + std::to_string(t);
+            chatMessage.senderId = s_ThreadedBotId;
+            chatMessage.text = message.second;
+            chatMessage.timeSent = (t * 1000);
+            chatMessage.isOutgoing = false;
+            chatMessage.isRead = true;
+            chatMessage.topicId = message.first;
+
+            t = t - 100;
+            s_Messages[s_ThreadedBotId].push_back(chatMessage);
+          }
+        }
+
+        // Threaded bot chat which forbids new thread creation
+        {
+          t = 1238002000;
+          ChatInfo chatInfo;
+          chatInfo.id = s_ForbiddenBotId;
+          chatInfo.lastMessageTime = (t * 1000);
+          newChatsNotify->chatInfos.push_back(chatInfo);
+
+          ContactInfo contactInfo;
+          contactInfo.id = s_ForbiddenBotId;
+          contactInfo.name = "Forbidden Bot";
+          newContactsNotify->contactInfos.push_back(contactInfo);
+
+          ChatMessage chatMessage;
+          chatMessage.id = s_ForbiddenBotId + "_" + std::to_string(t);
+          chatMessage.senderId = s_ForbiddenBotId;
+          chatMessage.text = "This bot does not allow new threads.";
+          chatMessage.timeSent = (t * 1000);
+          chatMessage.isOutgoing = false;
+          chatMessage.isRead = true;
+          s_Messages[s_ForbiddenBotId].push_back(chatMessage);
+        }
+
         m_MessageHandler(newChatsNotify);
         m_MessageHandler(newContactsNotify);
       }
@@ -392,7 +457,85 @@ void DuChat::PerformRequest(std::shared_ptr<RequestMessage> p_RequestMessage)
         newMessagesNotify->sequence = true;
 
         newMessagesNotify->chatMessages = s_Messages[getMessagesRequest->chatId];
+
+        // topic-scoped history requests return only the topic's messages
+        const std::string& topicId = getMessagesRequest->topicId;
+        if (!topicId.empty())
+        {
+          std::vector<ChatMessage> topicMessages;
+          std::copy_if(newMessagesNotify->chatMessages.begin(), newMessagesNotify->chatMessages.end(),
+                       std::back_inserter(topicMessages),
+                       [&](const ChatMessage& chatMessage) { return (chatMessage.topicId == topicId); });
+          newMessagesNotify->chatMessages = topicMessages;
+        }
+
         m_MessageHandler(newMessagesNotify);
+      }
+      break;
+
+    case GetThreadsRequestType:
+      {
+        std::shared_ptr<GetThreadsRequest> getThreadsRequest =
+          std::static_pointer_cast<GetThreadsRequest>(p_RequestMessage);
+        std::shared_ptr<NewThreadsNotify> newThreadsNotify =
+          std::make_shared<NewThreadsNotify>(m_ProfileId);
+        newThreadsNotify->chatId = getThreadsRequest->chatId;
+
+        if (getThreadsRequest->chatId == s_ThreadedBotId)
+        {
+          ChatThreadInfo threadInfo;
+          threadInfo.id = StrUtil::NumToHex(6);
+          threadInfo.name = "Topic six";
+          threadInfo.lastMessageTime = 1237989000000;
+          newThreadsNotify->threads.push_back(threadInfo);
+
+          threadInfo.id = StrUtil::NumToHex(5);
+          threadInfo.name = "Topic five";
+          threadInfo.unreadCount = 1;
+          threadInfo.unreadMentionCount = 0;
+          threadInfo.lastMessageTime = 1237992000000;
+          newThreadsNotify->threads.push_back(threadInfo);
+        }
+        else if (getThreadsRequest->chatId == s_ForbiddenBotId)
+        {
+          ChatThreadInfo threadInfo;
+          threadInfo.id = StrUtil::NumToHex(9);
+          threadInfo.name = "Only topic";
+          threadInfo.unreadMentionCount = 1;
+          threadInfo.lastMessageTime = 1238002000000;
+          newThreadsNotify->threads.push_back(threadInfo);
+        }
+
+        // other chats are not threaded (empty snapshot)
+        m_MessageHandler(newThreadsNotify);
+      }
+      break;
+
+    case CreateThreadRequestType:
+      {
+        std::shared_ptr<CreateThreadRequest> createThreadRequest =
+          std::static_pointer_cast<CreateThreadRequest>(p_RequestMessage);
+        std::shared_ptr<NewThreadNotify> newThreadNotify =
+          std::make_shared<NewThreadNotify>(m_ProfileId);
+        newThreadNotify->chatId = createThreadRequest->chatId;
+
+        if (createThreadRequest->chatId == s_ThreadedBotId)
+        {
+          static int nextTopicId = 100;
+          ChatThreadInfo threadInfo;
+          threadInfo.id = StrUtil::NumToHex(nextTopicId++);
+          threadInfo.name = createThreadRequest->name;
+          newThreadNotify->thread = threadInfo;
+          newThreadNotify->success = true;
+        }
+        else
+        {
+          // simulates the server rejecting thread creation (ex.
+          // BOT_FORUM_CREATE_FORBIDDEN)
+          newThreadNotify->success = false;
+        }
+
+        m_MessageHandler(newThreadNotify);
       }
       break;
 
@@ -406,6 +549,35 @@ void DuChat::PerformRequest(std::shared_ptr<RequestMessage> p_RequestMessage)
         sendMessageNotify->chatId = sendMessageRequest->chatId;
         sendMessageNotify->chatMessage = sendMessageRequest->chatMessage;
         m_MessageHandler(sendMessageNotify);
+
+        // the threaded bot chats reply in the topic the message was sent to,
+        // making the send routing observable in the ui and logs
+        const std::string& chatId = sendMessageRequest->chatId;
+        const bool isThreadedChat = ((chatId == s_ThreadedBotId) || (chatId == s_ForbiddenBotId));
+        if (isThreadedChat)
+        {
+          static int replyCount = 0;
+          ++replyCount;
+
+          ChatMessage chatMessage;
+          chatMessage.id = chatId + "_reply_" + std::to_string(replyCount);
+          chatMessage.senderId = chatId;
+          chatMessage.text = "Reply " + std::to_string(replyCount) + " to: " + sendMessageRequest->chatMessage.text;
+          chatMessage.timeSent = (1238012000 + replyCount) * 1000;
+          chatMessage.isOutgoing = false;
+          chatMessage.isRead = false;
+          chatMessage.topicId = sendMessageRequest->chatMessage.topicId;
+          s_Messages[chatId].push_back(chatMessage);
+
+          std::shared_ptr<NewMessagesNotify> newMessagesNotify =
+            std::make_shared<NewMessagesNotify>(m_ProfileId);
+          newMessagesNotify->success = true;
+          newMessagesNotify->chatId = chatId;
+          newMessagesNotify->cached = false;
+          newMessagesNotify->sequence = true;
+          newMessagesNotify->chatMessages.push_back(chatMessage);
+          m_MessageHandler(newMessagesNotify);
+        }
       }
       break;
 

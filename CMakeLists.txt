@@ -452,6 +452,8 @@ add_executable(nchat
   src/uimessagedialog.h
   src/uimodel.cpp
   src/uimodel.h
+  src/uithreadlistdialog.cpp
+  src/uithreadlistdialog.h
   src/uiscreen.cpp
   src/uiscreen.h
   src/uistatusview.cpp

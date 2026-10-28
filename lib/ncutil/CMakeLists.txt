@@ -83,6 +83,8 @@ add_library(ncutil ${LIBRARY_LINKING_TYPE}
   src/strutil.h
   src/sysutil.cpp
   src/sysutil.h
+  src/threadutil.cpp
+  src/threadutil.h
   src/timeutil.cpp
   src/timeutil.h
 )

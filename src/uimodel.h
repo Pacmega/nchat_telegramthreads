@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <map>
 #include <mutex>
 #include <set>
 #include <stack>
@@ -38,6 +39,7 @@ private:
     void OnKeyIncreaseListWidth();
     void OnKeyToggleHelp();
     void OnKeyToggleList();
+    void OnKeyToggleThreads();
     void OnKeyToggleTop();
     void OnKeyToggleEmoji();
     void OnKeySendMsg();
@@ -49,6 +51,9 @@ private:
     void OnKeyNextChat();
     void OnKeyPrevChat();
     void OnKeyUnreadChat();
+    void OnKeyNextThread();
+    void OnKeyPrevThread();
+    void OnKeyUnreadThread();
     void OnKeyPrevPage();
     void OnKeyNextPage();
     bool OnKeyHomeFetchCache();
@@ -92,7 +97,7 @@ private:
     bool Process();
     void ProcessTimers();
 
-    std::string GetLastMessageId(const std::string& p_ProfileId, const std::string& p_ChatId);
+    std::string GetLastMessageId(const std::string& p_ProfileId, const std::string& p_ChatId, bool p_UseFilter = false);
     void UpdateChatInfoLastMessageTime(const std::string& p_ProfileId, const std::string& p_ChatId);
     void UpdateChatInfoIsUnread(const std::string& p_ProfileId, const std::string& p_ChatId);
     std::string GetContactName(const std::string& p_ProfileId, const std::string& p_ChatId);
@@ -110,12 +115,17 @@ private:
 
     std::vector<std::pair<std::string, std::string>>& GetChatVec();
     std::vector<std::pair<std::string, std::string>>& GetChatVecLock();
+    std::vector<ChatThreadInfo> GetThreadVec(const std::string& p_ProfileId, const std::string& p_ChatId);
     std::unordered_map<std::string, std::unordered_map<std::string, ContactInfo>> GetContactInfos();
     int64_t GetContactInfosUpdateTime();
     int64_t GetGroupMembersUpdateTime();
     std::pair<std::string, std::string>& GetCurrentChat();
     bool IsCurrentChat(const std::string& p_ProfileId, const std::string& p_ChatId);
     int& GetCurrentChatIndex();
+    int GetCurrentThreadIndex(const std::string& p_ProfileId, const std::string& p_ChatId);
+    bool GetThreadsFocus();
+    bool IsThreadedChat(const std::string& p_ProfileId, const std::string& p_ChatId);
+    std::string GetCurrentThread(const std::string& p_ProfileId, const std::string& p_ChatId);
 
     std::unordered_map<std::string, ChatMessage>& GetMessages(const std::string& p_ProfileId,
                                                               const std::string& p_ChatId);
@@ -181,6 +191,8 @@ private:
     void StartExtCall(const std::string& p_Phone);
 
     void GotoChat(const std::pair<std::string, std::string>& p_Chat);
+    void SelectThreadById(const std::string& p_ProfileId, const std::string& p_ChatId,
+                          const std::string& p_TopicId);
     bool PreReact(std::string& p_ProfileId, std::string& p_ChatId, std::string& p_SenderId,
                   std::string& p_MsgId, std::string& p_SelfEmoji, bool& p_HasLimitedReactions);
     void SetReact(const std::string& p_ProfileId, const std::string& p_ChatId, const std::string& p_SenderId,
@@ -200,6 +212,7 @@ private:
   private:
     void SortChats();
     void OnCurrentChatChanged();
+    void ProbeCurrentChatThreads();
     void RequestMessagesCurrentChat();
     void RequestMessagesNextChat();
     void RequestMessages(const std::string& p_ProfileId, const std::string& p_ChatId);
@@ -212,6 +225,7 @@ private:
     void UpdateStatus();
     void UpdateHelp();
     void UpdateHistory();
+    void UpdateThreads();
     void UpdateEntry();
     void ResetMessageOffset();
     bool IsCurrentChatSet();
@@ -219,6 +233,13 @@ private:
     void DesktopNotify(const std::string& p_Name, const std::string& p_Text);
     void SetHistoryInteraction(bool p_HistoryInteraction);
     std::string GetSelectedMessageText();
+    const std::string& GetThreadFilter(const std::string& p_ProfileId, const std::string& p_ChatId);
+    void UpdateThreadInfos(const std::string& p_ProfileId, const std::string& p_ChatId,
+                           const std::vector<ChatThreadInfo>& p_NewThreadInfos);
+    void SelectThread(int p_Index);
+    void SetCurrentThread(const std::string& p_ProfileId, const std::string& p_ChatId, const std::string& p_TopicId);
+    void RebuildFilteredMessageVec(const std::string& p_ProfileId, const std::string& p_ChatId);
+    std::vector<std::string>& GetUnfilteredMessageVec(const std::string& p_ProfileId, const std::string& p_ChatId);
     void Clear(bool p_AllowUndo);
     void SaveEditMessage();
     std::string EntryStrToSendStr(const std::wstring& p_EntryStr);
@@ -250,6 +271,15 @@ private:
     std::unordered_map<std::string, int64_t> m_ConnectTime;
     int64_t m_LastSyncMessageTime = 0;
 
+    std::unordered_map<std::string, std::unordered_map<std::string, std::map<std::string, ChatThreadInfo>>> m_ThreadInfos;
+    std::unordered_map<std::string, std::unordered_map<std::string, std::vector<ChatThreadInfo>>> m_ThreadVec;
+    std::unordered_map<std::string, std::unordered_map<std::string, bool>> m_ThreadedChats; // present = state known
+    std::unordered_map<std::string, std::unordered_map<std::string, std::string>> m_CurrentThread;
+    std::unordered_map<std::string, std::unordered_map<std::string, int>> m_CurrentThreadIndex;
+    std::unordered_map<std::string, std::unordered_map<std::string, bool>> m_ThreadCreationForbidden;
+    std::unordered_map<std::string, std::unordered_map<std::string, ChatMessage>> m_PendingThreadSend;
+    bool m_ThreadsFocus = false;
+
     std::pair<std::string, std::string> m_CurrentChat;
     int m_CurrentChatIndex = -1;
     static const std::pair<std::string, std::string> s_ChatNone;
@@ -260,6 +290,7 @@ private:
     std::unordered_map<std::string, std::unordered_map<std::string, std::vector<std::string>>> m_MessageVec;
     std::unordered_map<std::string,
                        std::unordered_map<std::string, std::unordered_map<std::string, ChatMessage>>> m_Messages;
+    std::unordered_map<std::string, std::unordered_map<std::string, std::vector<std::string>>> m_UnfilteredMessageVec;
     std::unordered_map<std::string, std::unordered_map<std::string, int>> m_MessageOffset;
     std::unordered_map<std::string, std::unordered_map<std::string, std::stack<int>>> m_MessageOffsetStack;
     std::unordered_map<std::string,
@@ -323,6 +354,7 @@ public:
 
   void GetAvailableEmojis(std::set<std::string>& p_AvailableEmojis, bool& p_Pending);
   std::vector<std::pair<std::string, std::string>> GetChatVec();
+  std::vector<ChatThreadInfo> GetThreadVec(const std::string& p_ProfileId, const std::string& p_ChatId);
   std::string GetContactListName(const std::string& p_ProfileId, const std::string& p_ChatId, bool p_AllowId,
                                  bool p_AllowAlias);
   bool IsContactSelf(const std::string& p_ProfileId, const std::string& p_ContactId);
@@ -346,6 +378,11 @@ public:
   bool GetChatIsUnreadLocked(const std::string& p_ProfileId, const std::string& p_ChatId);
   std::string GetChatStatusLocked(const std::string& p_ProfileId, const std::string& p_ChatId);
   std::vector<std::pair<std::string, std::string>>& GetChatVecLocked();
+  std::vector<ChatThreadInfo> GetThreadVecLocked(const std::string& p_ProfileId, const std::string& p_ChatId);
+  std::string GetCurrentThreadLocked(const std::string& p_ProfileId, const std::string& p_ChatId);
+  int GetCurrentThreadIndexLocked(const std::string& p_ProfileId, const std::string& p_ChatId);
+  bool GetThreadsFocusLocked();
+  bool IsThreadedChatLocked(const std::string& p_ProfileId, const std::string& p_ChatId);
   std::string GetContactListNameLocked(const std::string& p_ProfileId, const std::string& p_ChatId, bool p_AllowId,
                                        bool p_AllowAlias);
   std::string GetContactNameLocked(const std::string& p_ProfileId, const std::string& p_ChatId);

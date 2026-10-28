@@ -33,6 +33,7 @@ endmacro()
 # Unit tests
 add_unit_test(test001)
 add_unit_test(test002)
+add_unit_test(test004)
 
 # test003 additionally covers the message cache schema migration and the tgchat
 # forum topic conversions, and therefore requires the tgchat library (tdlib)

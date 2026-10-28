@@ -26,6 +26,7 @@
 #include "status.h"
 #include "strutil.h"
 #include "sysutil.h"
+#include "threadutil.h"
 #include "timeutil.h"
 #include "uidialog.h"
 #include "uichatlistdialog.h"
@@ -38,6 +39,7 @@
 #include "uikeyconfig.h"
 #include "uikeyinput.h"
 #include "uimessagedialog.h"
+#include "uithreadlistdialog.h"
 #include "uitextinputdialog.h"
 #include "uiview.h"
 
@@ -146,6 +148,224 @@ void UiModel::Impl::OnKeyToggleList()
   ReinitView();
 }
 
+void UiModel::Impl::OnKeyToggleThreads()
+{
+  AnyUserKeyInput();
+  if (!IsThreadedChat(m_CurrentChat.first, m_CurrentChat.second)) return;
+
+  m_ThreadsFocus = !m_ThreadsFocus;
+  LOG_TRACE("threads focus %d", m_ThreadsFocus);
+  UpdateList();
+  UpdateThreads();
+}
+
+void UiModel::Impl::OnKeyNextThread()
+{
+  const std::string& profileId = m_CurrentChat.first;
+  const std::string& chatId = m_CurrentChat.second;
+  const std::vector<ChatThreadInfo>& threadVec = m_ThreadVec[profileId][chatId];
+  if (threadVec.empty()) return;
+
+  int& threadIndex = m_CurrentThreadIndex[profileId][chatId];
+  if (threadIndex >= ((int)threadVec.size() - 1)) return;
+
+  SelectThread(threadIndex + 1);
+}
+
+void UiModel::Impl::OnKeyPrevThread()
+{
+  const std::string& profileId = m_CurrentChat.first;
+  const std::string& chatId = m_CurrentChat.second;
+  const std::vector<ChatThreadInfo>& threadVec = m_ThreadVec[profileId][chatId];
+  if (threadVec.empty()) return;
+
+  int& threadIndex = m_CurrentThreadIndex[profileId][chatId];
+  if (threadIndex <= 0) return;
+
+  SelectThread(threadIndex - 1);
+}
+
+void UiModel::Impl::OnKeyUnreadThread()
+{
+  const std::string& profileId = m_CurrentChat.first;
+  const std::string& chatId = m_CurrentChat.second;
+  const std::vector<ChatThreadInfo>& threadVec = m_ThreadVec[profileId][chatId];
+  if (threadVec.empty()) return;
+
+  std::vector<int> unreadVec;
+  bool unreadIsSelected = false;
+  const int currentIndex = std::max(m_CurrentThreadIndex[profileId][chatId], 0);
+  for (size_t i = 0; i < threadVec.size(); ++i)
+  {
+    const ChatThreadInfo& threadInfo = threadVec.at(i);
+    const bool isUnread = ((threadInfo.unreadCount > 0) || (threadInfo.unreadMentionCount > 0));
+    if (isUnread)
+    {
+      unreadVec.push_back((int)i);
+      if (currentIndex == (int)i)
+      {
+        unreadIsSelected = true;
+      }
+    }
+  }
+
+  if (unreadVec.empty()) return;
+
+  int index = unreadVec.at(0);
+  if (unreadIsSelected && (unreadVec.size() > 1))
+  {
+    auto it = std::find(unreadVec.begin(), unreadVec.end(), currentIndex);
+    if (it != unreadVec.end())
+    {
+      size_t idx = std::distance(unreadVec.begin(), it);
+      ++idx;
+      if (idx >= unreadVec.size())
+      {
+        idx = 0;
+      }
+
+      index = unreadVec.at(idx);
+    }
+  }
+
+  SelectThread(index);
+}
+
+void UiModel::Impl::SelectThread(int p_Index)
+{
+  if (m_CurrentChat == s_ChatNone) return;
+
+  const std::string& profileId = m_CurrentChat.first;
+  const std::string& chatId = m_CurrentChat.second;
+  const std::vector<ChatThreadInfo>& threadVec = m_ThreadVec[profileId][chatId];
+  if (threadVec.empty()) return;
+
+  p_Index = std::max(0, std::min(p_Index, (int)threadVec.size() - 1));
+
+  m_CurrentThreadIndex[profileId][chatId] = p_Index;
+  SetCurrentThread(profileId, chatId, threadVec.at(p_Index).id);
+}
+
+void UiModel::Impl::SelectThreadById(const std::string& p_ProfileId, const std::string& p_ChatId,
+                                     const std::string& p_TopicId)
+{
+  const std::vector<ChatThreadInfo>& threadVec = m_ThreadVec[p_ProfileId][p_ChatId];
+  for (size_t i = 0; i < threadVec.size(); ++i)
+  {
+    if (threadVec.at(i).id == p_TopicId)
+    {
+      m_CurrentThreadIndex[p_ProfileId][p_ChatId] = (int)i;
+      SetCurrentThread(p_ProfileId, p_ChatId, p_TopicId);
+      return;
+    }
+  }
+}
+
+void UiModel::Impl::SetCurrentThread(const std::string& p_ProfileId, const std::string& p_ChatId,
+                                     const std::string& p_TopicId)
+{
+  std::string& currentThreadId = m_CurrentThread[p_ProfileId][p_ChatId];
+  if (currentThreadId == p_TopicId) return;
+
+  if (currentThreadId.empty() && !p_TopicId.empty())
+  {
+    // activate the filter, stashing the unfiltered message vec
+    if (m_UnfilteredMessageVec[p_ProfileId].count(p_ChatId) == 0)
+    {
+      m_UnfilteredMessageVec[p_ProfileId][p_ChatId] = std::move(m_MessageVec[p_ProfileId][p_ChatId]);
+    }
+
+    RebuildFilteredMessageVec(p_ProfileId, p_ChatId);
+  }
+  else if (!currentThreadId.empty() && p_TopicId.empty())
+  {
+    // deactivate the filter, restoring the unfiltered message vec
+    auto stashIt = m_UnfilteredMessageVec[p_ProfileId].find(p_ChatId);
+    if (stashIt != m_UnfilteredMessageVec[p_ProfileId].end())
+    {
+      m_MessageVec[p_ProfileId][p_ChatId] = std::move(stashIt->second);
+      m_UnfilteredMessageVec[p_ProfileId].erase(stashIt);
+    }
+  }
+  else
+  {
+    // switch between threads, the unfiltered message vec remains stashed
+    RebuildFilteredMessageVec(p_ProfileId, p_ChatId);
+  }
+
+  currentThreadId = p_TopicId;
+  LOG_TRACE("current thread %s %s", p_ChatId.c_str(), p_TopicId.c_str());
+
+  const std::vector<ChatThreadInfo>& threadVec = m_ThreadVec[p_ProfileId][p_ChatId];
+  for (size_t i = 0; i < threadVec.size(); ++i)
+  {
+    if (threadVec.at(i).id == p_TopicId)
+    {
+      m_CurrentThreadIndex[p_ProfileId][p_ChatId] = (int)i;
+      break;
+    }
+  }
+
+  // the home fetch-all state is scoped to the active thread filter
+  m_FetchedAllCache[p_ProfileId][p_ChatId] = false;
+
+  if (IsCurrentChat(p_ProfileId, p_ChatId))
+  {
+    ResetMessageOffset();
+    RequestMessagesCurrentChat();
+  }
+
+  UpdateThreads();
+}
+
+void UiModel::Impl::RebuildFilteredMessageVec(const std::string& p_ProfileId, const std::string& p_ChatId)
+{
+  const std::string& topicId = GetThreadFilter(p_ProfileId, p_ChatId);
+  if (topicId.empty()) return;
+
+  m_MessageVec[p_ProfileId][p_ChatId] = ThreadUtil::FilterMessageVec(
+    m_UnfilteredMessageVec[p_ProfileId][p_ChatId], m_Messages[p_ProfileId][p_ChatId], topicId);
+}
+
+std::vector<std::string>& UiModel::Impl::GetUnfilteredMessageVec(const std::string& p_ProfileId,
+                                                                 const std::string& p_ChatId)
+{
+  if (!GetThreadFilter(p_ProfileId, p_ChatId).empty())
+  {
+    return m_UnfilteredMessageVec[p_ProfileId][p_ChatId];
+  }
+
+  return m_MessageVec[p_ProfileId][p_ChatId];
+}
+
+bool UiModel::Impl::IsThreadedChat(const std::string& p_ProfileId, const std::string& p_ChatId)
+{
+  auto chatIt = m_ThreadedChats.find(p_ProfileId);
+  if (chatIt == m_ThreadedChats.end()) return false;
+
+  auto it = chatIt->second.find(p_ChatId);
+  return ((it != chatIt->second.end()) && it->second);
+}
+
+const std::string& UiModel::Impl::GetThreadFilter(const std::string& p_ProfileId, const std::string& p_ChatId)
+{
+  return m_CurrentThread[p_ProfileId][p_ChatId];
+}
+
+void UiModel::Impl::UpdateThreadInfos(const std::string& p_ProfileId, const std::string& p_ChatId,
+                                      const std::vector<ChatThreadInfo>& p_NewThreadInfos)
+{
+  std::map<std::string, ChatThreadInfo>& threadInfos = m_ThreadInfos[p_ProfileId][p_ChatId];
+  threadInfos.clear();
+  for (const ChatThreadInfo& threadInfo : p_NewThreadInfos)
+  {
+    threadInfos[threadInfo.id] = threadInfo;
+  }
+
+  // the menu vec is the General entry followed by the notified topics
+  m_ThreadVec[p_ProfileId][p_ChatId] = ThreadUtil::BuildThreadInfos(p_NewThreadInfos);
+}
+
 void UiModel::Impl::OnKeyToggleTop()
 {
   AnyUserKeyInput();
@@ -199,7 +419,30 @@ void UiModel::Impl::SendMessage()
     SetSelectMessageActive(false);
   }
 
-  SendProtocolRequest(profileId, sendMessageRequest);
+  const ThreadUtil::ThreadSendAction sendAction = ThreadUtil::GetSendAction(
+    IsThreadedChat(profileId, chatId), GetChatInfoIsGroup(profileId, chatId),
+    GetThreadFilter(profileId, chatId), m_ThreadCreationForbidden[profileId][chatId]);
+  if (sendAction == ThreadUtil::ThreadSendActionSelected)
+  {
+    sendMessageRequest->chatMessage.topicId = GetThreadFilter(profileId, chatId);
+  }
+
+  if (sendAction == ThreadUtil::ThreadSendActionCreateThenSend)
+  {
+    // no thread selected in a threaded bot chat; queue the message until the
+    // new thread has been created, then send it into the new thread
+    LOG_TRACE("queue send pending thread creation");
+    m_PendingThreadSend[profileId][chatId] = sendMessageRequest->chatMessage;
+
+    std::shared_ptr<CreateThreadRequest> createThreadRequest = std::make_shared<CreateThreadRequest>();
+    createThreadRequest->chatId = chatId;
+    createThreadRequest->name = ThreadUtil::DeriveThreadName(sendMessageRequest->chatMessage.text);
+    SendProtocolRequest(profileId, createThreadRequest);
+  }
+  else
+  {
+    SendProtocolRequest(profileId, sendMessageRequest);
+  }
 
   entryStr.clear();
   entryPos = 0;
@@ -244,7 +487,7 @@ void UiModel::Impl::EntryKeyHandler(wint_t p_Key)
   int& entryPos = m_EntryPos[profileId][chatId];
   std::wstring& entryStr = m_EntryStr[profileId][chatId];
 
-  const int messageCount = m_Messages[profileId][chatId].size();
+  const int messageCount = m_MessageVec[profileId][chatId].size();
   int& messageOffset = m_MessageOffset[profileId][chatId];
 
   if (p_Key == keyUp)
@@ -551,6 +794,12 @@ void UiModel::Impl::OnKeyNextChat()
 
   if (GetEditMessageActive()) return;
 
+  if (m_ThreadsFocus && IsThreadedChat(m_CurrentChat.first, m_CurrentChat.second))
+  {
+    OnKeyNextThread();
+    return;
+  }
+
   if (m_ChatVec.empty()) return;
 
   ++m_CurrentChatIndex;
@@ -570,6 +819,12 @@ void UiModel::Impl::OnKeyPrevChat()
 
   if (GetEditMessageActive()) return;
 
+  if (m_ThreadsFocus && IsThreadedChat(m_CurrentChat.first, m_CurrentChat.second))
+  {
+    OnKeyPrevThread();
+    return;
+  }
+
   if (m_ChatVec.empty()) return;
 
   --m_CurrentChatIndex;
@@ -588,6 +843,12 @@ void UiModel::Impl::OnKeyUnreadChat()
   AnyUserKeyInput();
 
   if (GetEditMessageActive()) return;
+
+  if (m_ThreadsFocus && IsThreadedChat(m_CurrentChat.first, m_CurrentChat.second))
+  {
+    OnKeyUnreadThread();
+    return;
+  }
 
   if (m_ChatVec.empty()) return;
 
@@ -642,11 +903,18 @@ void UiModel::Impl::OnKeyPrevPage()
 
   if (GetEditMessageActive()) return;
 
+  if (m_ThreadsFocus && IsThreadedChat(m_CurrentChat.first, m_CurrentChat.second))
+  {
+    // page through the thread selection
+    SelectThread(std::max(m_CurrentThreadIndex[m_CurrentChat.first][m_CurrentChat.second], 0) - 10);
+    return;
+  }
+
   int historyShowCount = m_View->GetHistoryShowCount();
   std::string profileId = m_CurrentChat.first;
   std::string chatId = m_CurrentChat.second;
 
-  const int messageCount = m_Messages[profileId][chatId].size();
+  const int messageCount = m_MessageVec[profileId][chatId].size();
   int& messageOffset = m_MessageOffset[profileId][chatId];
   std::stack<int>& messageOffsetStack = m_MessageOffsetStack[profileId][chatId];
 
@@ -668,6 +936,13 @@ void UiModel::Impl::OnKeyNextPage()
   AnyUserKeyInput();
 
   if (GetEditMessageActive()) return;
+
+  if (m_ThreadsFocus && IsThreadedChat(m_CurrentChat.first, m_CurrentChat.second))
+  {
+    // page through the thread selection
+    SelectThread(std::max(m_CurrentThreadIndex[m_CurrentChat.first][m_CurrentChat.second], 0) + 10);
+    return;
+  }
 
   std::string profileId = m_CurrentChat.first;
   std::string chatId = m_CurrentChat.second;
@@ -719,13 +994,15 @@ bool UiModel::Impl::OnKeyHomeFetchCache()
   if (!fetchedAllCache)
   {
     fetchedAllCache = true;
-    std::string fromId = GetLastMessageId(profileId, chatId);
+    const std::string& topicId = GetThreadFilter(profileId, chatId);
+    std::string fromId = GetLastMessageId(profileId, chatId, !topicId.empty());
     int limit = std::numeric_limits<int>::max();
     LOG_DEBUG("fetch all");
     std::shared_ptr<GetMessagesRequest> getMessagesRequest = std::make_shared<GetMessagesRequest>();
     getMessagesRequest->chatId = chatId;
     getMessagesRequest->fromMsgId = fromId;
     getMessagesRequest->limit = limit;
+    getMessagesRequest->topicId = topicId;
     LOG_TRACE("request messages from %s limit %d", fromId.c_str(), limit);
     SendProtocolRequest(m_CurrentChat.first, getMessagesRequest);
     return true;
@@ -741,7 +1018,7 @@ void UiModel::Impl::OnKeyHomeFetchNext()
   std::string profileId = m_CurrentChat.first;
   std::string chatId = m_CurrentChat.second;
 
-  const int messageCount = m_Messages[profileId][chatId].size();
+  const int messageCount = m_MessageVec[profileId][chatId].size();
   int& messageOffset = m_MessageOffset[profileId][chatId];
   std::stack<int>& messageOffsetStack = m_MessageOffsetStack[profileId][chatId];
 
@@ -770,7 +1047,7 @@ void UiModel::Impl::HomeFetchNext(const std::string& p_ProfileId, const std::str
     {
       if (p_MsgCount > 0)
       {
-        const int messageCount = m_Messages[p_ProfileId][p_ChatId].size();
+        const int messageCount = m_MessageVec[p_ProfileId][p_ChatId].size();
         int& messageOffset = m_MessageOffset[p_ProfileId][p_ChatId];
         std::stack<int>& messageOffsetStack = m_MessageOffsetStack[p_ProfileId][p_ChatId];
 
@@ -1746,7 +2023,7 @@ void UiModel::Impl::MessageHandler(std::shared_ptr<ServiceMessage> p_ServiceMess
           if (m_ChatInfos[profileId].count(chatId) && m_ChatInfos[profileId][chatId].isArchived) return;
 
           std::unordered_map<std::string, ChatMessage>& messages = m_Messages[profileId][chatId];
-          std::vector<std::string>& messageVec = m_MessageVec[profileId][chatId];
+          std::vector<std::string>& messageVec = GetUnfilteredMessageVec(profileId, chatId);
           const std::vector<ChatMessage>& chatMessages = newMessagesNotify->chatMessages;
           const std::string& fromMsgId = newMessagesNotify->fromMsgId;
 
@@ -1793,9 +2070,9 @@ void UiModel::Impl::MessageHandler(std::shared_ptr<ServiceMessage> p_ServiceMess
             int& messageOffset = m_MessageOffset[profileId][chatId];
             if ((profileId == m_CurrentChat.first) && (chatId == m_CurrentChat.second))
             {
-              if (GetSelectMessageActive() && (messageOffset < (int)messageVec.size()))
+              if (GetSelectMessageActive() && (messageOffset < (int)m_MessageVec[profileId][chatId].size()))
               {
-                currentMessageId = messageVec[messageOffset];
+                currentMessageId = m_MessageVec[profileId][chatId][messageOffset];
               }
             }
 
@@ -1807,14 +2084,20 @@ void UiModel::Impl::MessageHandler(std::shared_ptr<ServiceMessage> p_ServiceMess
             });
             // *INDENT-ON*
 
+            if (!GetThreadFilter(profileId, chatId).empty())
+            {
+              RebuildFilteredMessageVec(profileId, chatId);
+            }
+
             if ((profileId == m_CurrentChat.first) && (chatId == m_CurrentChat.second))
             {
               if (!currentMessageId.empty())
               {
-                auto it = std::find(messageVec.begin(), messageVec.end(), currentMessageId);
-                if (it != messageVec.end())
+                std::vector<std::string>& displayVec = m_MessageVec[profileId][chatId];
+                auto it = std::find(displayVec.begin(), displayVec.end(), currentMessageId);
+                if (it != displayVec.end())
                 {
-                  messageOffset = it - messageVec.begin();
+                  messageOffset = it - displayVec.begin();
                 }
               }
 
@@ -1882,12 +2165,18 @@ void UiModel::Impl::MessageHandler(std::shared_ptr<ServiceMessage> p_ServiceMess
           std::string chatId = deleteMessageNotify->chatId;
           std::string msgId = deleteMessageNotify->msgId;
 
-          std::vector<std::string>& messageVec = m_MessageVec[profileId][chatId];
-          messageVec.erase(std::remove(messageVec.begin(), messageVec.end(), msgId), messageVec.end());
+          std::vector<std::string>& unfilteredVec = GetUnfilteredMessageVec(profileId, chatId);
+          unfilteredVec.erase(std::remove(unfilteredVec.begin(), unfilteredVec.end(), msgId), unfilteredVec.end());
 
           std::unordered_map<std::string, ChatMessage>& messages = m_Messages[profileId][chatId];
           messages.erase(msgId);
 
+          if (!GetThreadFilter(profileId, chatId).empty())
+          {
+            RebuildFilteredMessageVec(profileId, chatId);
+          }
+
+          std::vector<std::string>& messageVec = m_MessageVec[profileId][chatId];
           if (GetSelectMessageActive())
           {
             int& messageOffset = m_MessageOffset[profileId][chatId];
@@ -2115,6 +2404,14 @@ void UiModel::Impl::MessageHandler(std::shared_ptr<ServiceMessage> p_ServiceMess
           }
 
           m_ChatInfos[profileId].erase(chatId);
+          m_ThreadInfos[profileId].erase(chatId);
+          m_ThreadVec[profileId].erase(chatId);
+          m_ThreadedChats[profileId].erase(chatId);
+          m_CurrentThread[profileId].erase(chatId);
+          m_CurrentThreadIndex[profileId].erase(chatId);
+          m_ThreadCreationForbidden[profileId].erase(chatId);
+          m_PendingThreadSend[profileId].erase(chatId);
+          m_UnfilteredMessageVec[profileId].erase(chatId);
 
           if ((m_CurrentChat.first == profileId) && (m_CurrentChat.second == chatId))
           {
@@ -2191,12 +2488,20 @@ void UiModel::Impl::MessageHandler(std::shared_ptr<ServiceMessage> p_ServiceMess
         {
           m_MessageVec[profileId].erase(id);
           m_Messages[profileId].erase(id);
+          m_UnfilteredMessageVec[profileId].erase(id);
           m_MessageOffset[profileId].erase(id);
           m_MessageOffsetStack[profileId].erase(id);
           m_MsgFromIdsRequested[profileId].erase(id);
           m_FetchedAllCache[profileId].erase(id);
           m_OldestMessageId[profileId].erase(id);
           m_OldestMessageTime[profileId].erase(id);
+          m_ThreadInfos[profileId].erase(id);
+          m_ThreadVec[profileId].erase(id);
+          m_ThreadedChats[profileId].erase(id);
+          m_CurrentThread[profileId].erase(id);
+          m_CurrentThreadIndex[profileId].erase(id);
+          m_ThreadCreationForbidden[profileId].erase(id);
+          m_PendingThreadSend[profileId].erase(id);
         }
 
         if ((m_CurrentChat.first == profileId) &&
@@ -2407,6 +2712,91 @@ void UiModel::Impl::MessageHandler(std::shared_ptr<ServiceMessage> p_ServiceMess
       }
       break;
 
+    case NewThreadsNotifyType:
+      {
+        std::shared_ptr<NewThreadsNotify> newThreadsNotify = std::static_pointer_cast<NewThreadsNotify>(
+          p_ServiceMessage);
+        const std::string& chatId = newThreadsNotify->chatId;
+        LOG_TRACE("new threads %s count %d", chatId.c_str(), (int)newThreadsNotify->threads.size());
+
+        UpdateThreadInfos(profileId, chatId, newThreadsNotify->threads);
+
+        // the snapshot resolves the threadedness probe for this chat; an empty
+        // snapshot means the chat is not threaded
+        const bool wasKnown = (m_ThreadedChats[profileId].count(chatId) > 0);
+        m_ThreadedChats[profileId][chatId] = !newThreadsNotify->threads.empty();
+
+        // reset the selection if the selected thread no longer exists
+        const std::string& currentThreadId = m_CurrentThread[profileId][chatId];
+        if (!currentThreadId.empty() && (m_ThreadInfos[profileId][chatId].count(currentThreadId) == 0))
+        {
+          SetCurrentThread(profileId, chatId, std::string());
+        }
+
+        if (IsCurrentChat(profileId, chatId))
+        {
+          UpdateThreads();
+          if (!wasKnown)
+          {
+            // the threads panel appears or disappears with the known state
+            ReinitView();
+          }
+        }
+      }
+      break;
+
+    case NewThreadNotifyType:
+      {
+        std::shared_ptr<NewThreadNotify> newThreadNotify = std::static_pointer_cast<NewThreadNotify>(
+          p_ServiceMessage);
+        const std::string& chatId = newThreadNotify->chatId;
+
+        if (newThreadNotify->success)
+        {
+          LOG_TRACE("new thread %s %s", chatId.c_str(), newThreadNotify->thread.id.c_str());
+          m_ThreadInfos[profileId][chatId][newThreadNotify->thread.id] = newThreadNotify->thread;
+          m_ThreadedChats[profileId][chatId] = true;
+
+          // insert the new thread after the General entry (most recent activity)
+          std::vector<ChatThreadInfo>& threadVec = m_ThreadVec[profileId][chatId];
+          const size_t insertIndex = threadVec.empty() ? threadVec.size() : std::min(threadVec.size(), (size_t)1);
+          threadVec.insert(threadVec.begin() + insertIndex, newThreadNotify->thread);
+
+          // select the new thread, flushing any message queued for it
+          SelectThreadById(profileId, chatId, newThreadNotify->thread.id);
+        }
+        else
+        {
+          LOG_TRACE("new thread failed %s", chatId.c_str());
+
+          // stop attempting thread creation for this chat and fall back to a
+          // topic-less (General) send
+          m_ThreadCreationForbidden[profileId][chatId] = true;
+        }
+
+        // send the message queued pending thread creation, topic-less on failure
+        auto pendingIt = m_PendingThreadSend[profileId].find(chatId);
+        if (pendingIt != m_PendingThreadSend[profileId].end())
+        {
+          const ChatMessage chatMessage = pendingIt->second;
+          m_PendingThreadSend[profileId].erase(pendingIt);
+
+          std::shared_ptr<SendMessageRequest> sendMessageRequest = std::make_shared<SendMessageRequest>();
+          sendMessageRequest->chatId = chatId;
+          sendMessageRequest->chatMessage = chatMessage;
+          if (newThreadNotify->success)
+          {
+            sendMessageRequest->chatMessage.topicId = newThreadNotify->thread.id;
+          }
+
+          LOG_TRACE("send queued message %s", newThreadNotify->success ? "in thread" : "topic-less");
+          SendProtocolRequest(profileId, sendMessageRequest);
+        }
+
+        UpdateThreads();
+      }
+      break;
+
     default:
       LOG_DEBUG("unknown service message %d", p_ServiceMessage->GetMessageType());
       break;
@@ -2515,10 +2905,12 @@ void UiModel::Impl::SortChats()
   }
 }
 
-std::string UiModel::Impl::GetLastMessageId(const std::string& p_ProfileId, const std::string& p_ChatId)
+std::string UiModel::Impl::GetLastMessageId(const std::string& p_ProfileId, const std::string& p_ChatId,
+                                            bool p_UseFilter)
 {
   const std::unordered_map<std::string, ChatMessage>& messages = m_Messages[p_ProfileId][p_ChatId];
-  const std::vector<std::string>& messageVec = m_MessageVec[p_ProfileId][p_ChatId];
+  const std::vector<std::string>& messageVec = p_UseFilter ? m_MessageVec[p_ProfileId][p_ChatId]
+                                                           : GetUnfilteredMessageVec(p_ProfileId, p_ChatId);
   if (messageVec.empty()) return std::string();
 
   std::string lastMessageId;
@@ -2845,11 +3237,27 @@ void UiModel::Impl::OnCurrentChatChanged()
   UpdateHistory();
   UpdateHelp();
   UpdateEntry();
+  ProbeCurrentChatThreads();
   RequestMessagesCurrentChat();
   RequestMessagesNextChat();
   RequestUserStatusCurrentChat();
   RequestUserStatusNextChat();
   ProtocolSetCurrentChat();
+}
+
+void UiModel::Impl::ProbeCurrentChatThreads()
+{
+  if (m_CurrentChat == s_ChatNone) return;
+
+  const std::string& profileId = m_CurrentChat.first;
+  const std::string& chatId = m_CurrentChat.second;
+  if (!HasProtocolFeature(profileId, FeatureThreads)) return;
+  if (m_ThreadedChats[profileId].count(chatId) > 0) return; // threadedness already known
+
+  LOG_TRACE("probe threads %s", chatId.c_str());
+  std::shared_ptr<GetThreadsRequest> getThreadsRequest = std::make_shared<GetThreadsRequest>();
+  getThreadsRequest->chatId = chatId;
+  SendProtocolRequest(profileId, getThreadsRequest);
 }
 
 void UiModel::Impl::RequestMessagesCurrentChat()
@@ -2873,28 +3281,43 @@ void UiModel::Impl::RequestMessagesNextChat()
 
 void UiModel::Impl::RequestMessages(const std::string& p_ProfileId, const std::string& p_ChatId)
 {
+  const std::string& topicId = GetThreadFilter(p_ProfileId, p_ChatId);
   std::unordered_set<std::string>& msgFromIdsRequested = m_MsgFromIdsRequested[p_ProfileId][p_ChatId];
-  const std::string& oldestMessageId = m_OldestMessageId[p_ProfileId][p_ChatId];
-  std::string fromId = (msgFromIdsRequested.empty() || oldestMessageId.empty()) ? "" : oldestMessageId;
-
-  int historySize = 0;
-  if (!oldestMessageId.empty())
-  {
-    const std::vector<std::string>& messageVec = m_MessageVec[p_ProfileId][p_ChatId];
-    historySize = messageVec.size();
-    for (auto msgIt = messageVec.rbegin(); msgIt != messageVec.rend(); ++msgIt)
-    {
-      if (*msgIt == oldestMessageId)
-      {
-        break;
-      }
-
-      --historySize;
-    }
-  }
-
   int messageOffset = m_MessageOffset[p_ProfileId][p_ChatId];
   const int maxHistory = m_HomeFetchAll ? 8 : (((GetHistoryLines() * 2) / 3) + 1);
+
+  std::string fromId;
+  int historySize = 0;
+  if (topicId.empty())
+  {
+    // chat-wide history request
+    const std::string& oldestMessageId = m_OldestMessageId[p_ProfileId][p_ChatId];
+    fromId = (msgFromIdsRequested.empty() || oldestMessageId.empty()) ? "" : oldestMessageId;
+
+    if (!oldestMessageId.empty())
+    {
+      const std::vector<std::string>& messageVec = m_MessageVec[p_ProfileId][p_ChatId];
+      historySize = messageVec.size();
+      for (auto msgIt = messageVec.rbegin(); msgIt != messageVec.rend(); ++msgIt)
+      {
+        if (*msgIt == oldestMessageId)
+        {
+          break;
+        }
+
+        --historySize;
+      }
+    }
+  }
+  else
+  {
+    // thread-scoped history request; the thread fetch state is anchored at the
+    // oldest displayed thread message, tracked per chat and topic
+    const std::vector<std::string>& messageVec = m_MessageVec[p_ProfileId][p_ChatId];
+    fromId = messageVec.empty() ? "" : messageVec.back();
+    historySize = messageVec.size();
+  }
+
   const int limit = std::max(0, (messageOffset + 1 + maxHistory - historySize));
   if (limit == 0)
   {
@@ -2903,14 +3326,17 @@ void UiModel::Impl::RequestMessages(const std::string& p_ProfileId, const std::s
     return;
   }
 
-  if (msgFromIdsRequested.find(fromId) != msgFromIdsRequested.end())
+  // the request state is keyed per scope, so a thread fetch and the chat-wide
+  // fetch do not collide
+  const std::string requestKey = topicId.empty() ? fromId : (topicId + "|" + fromId);
+  if (msgFromIdsRequested.find(requestKey) != msgFromIdsRequested.end())
   {
     LOG_TRACE("get messages from %s already requested", fromId.c_str());
     return;
   }
   else
   {
-    msgFromIdsRequested.insert(fromId);
+    msgFromIdsRequested.insert(requestKey);
   }
 
   const int minLimit = 12; // hack: up to 10 tgchat messages may share same timestamp
@@ -2918,7 +3344,9 @@ void UiModel::Impl::RequestMessages(const std::string& p_ProfileId, const std::s
   getMessagesRequest->chatId = p_ChatId;
   getMessagesRequest->fromMsgId = fromId;
   getMessagesRequest->limit = std::max(limit, minLimit);
-  LOG_TRACE("request messages in %s from %s limit %d", p_ChatId.c_str(), fromId.c_str(), getMessagesRequest->limit);
+  getMessagesRequest->topicId = topicId;
+  LOG_TRACE("request messages in %s from %s limit %d topic %s", p_ChatId.c_str(), fromId.c_str(),
+            getMessagesRequest->limit, topicId.c_str());
   SendProtocolRequest(p_ProfileId, getMessagesRequest);
 }
 
@@ -3068,6 +3496,11 @@ void UiModel::Impl::UpdateList()
   m_View->SetEntryDirty(true);
 }
 
+void UiModel::Impl::UpdateThreads()
+{
+  m_View->SetThreadsDirty(true);
+}
+
 void UiModel::Impl::UpdateStatus()
 {
   m_View->SetStatusDirty(true);
@@ -3111,6 +3544,11 @@ std::vector<std::pair<std::string, std::string>>& UiModel::Impl::GetChatVecLock(
   return GetChatVec();
 }
 
+std::vector<ChatThreadInfo> UiModel::Impl::GetThreadVec(const std::string& p_ProfileId, const std::string& p_ChatId)
+{
+  return m_ThreadVec[p_ProfileId][p_ChatId];
+}
+
 std::unordered_map<std::string, std::unordered_map<std::string, ContactInfo>> UiModel::Impl::GetContactInfos()
 {
   return m_ContactInfos;
@@ -3139,6 +3577,21 @@ bool UiModel::Impl::IsCurrentChat(const std::string& p_ProfileId, const std::str
 int& UiModel::Impl::GetCurrentChatIndex()
 {
   return m_CurrentChatIndex;
+}
+
+int UiModel::Impl::GetCurrentThreadIndex(const std::string& p_ProfileId, const std::string& p_ChatId)
+{
+  return m_CurrentThreadIndex[p_ProfileId][p_ChatId];
+}
+
+std::string UiModel::Impl::GetCurrentThread(const std::string& p_ProfileId, const std::string& p_ChatId)
+{
+  return GetThreadFilter(p_ProfileId, p_ChatId);
+}
+
+bool UiModel::Impl::GetThreadsFocus()
+{
+  return m_ThreadsFocus;
 }
 
 std::unordered_map<std::string, ChatMessage>& UiModel::Impl::GetMessages(const std::string& p_ProfileId,
@@ -4607,6 +5060,7 @@ void UiModel::KeyHandler(wint_t p_Key)
   static wint_t keyGotoChat = UiKeyConfig::GetKey("goto_chat");
 
   static wint_t keyToggleList = UiKeyConfig::GetKey("toggle_list");
+  static wint_t keyToggleThreads = UiKeyConfig::GetKey("toggle_threads");
   static wint_t keyToggleTop = UiKeyConfig::GetKey("toggle_top");
   static wint_t keyToggleHelp = UiKeyConfig::GetKey("toggle_help");
   static wint_t keyToggleEmoji = UiKeyConfig::GetKey("toggle_emoji");
@@ -4649,6 +5103,11 @@ void UiModel::KeyHandler(wint_t p_Key)
   {
     std::unique_lock<owned_mutex> lock(m_ModelMutex);
     GetImpl().OnKeyToggleList();
+  }
+  else if (p_Key == keyToggleThreads)
+  {
+    std::unique_lock<owned_mutex> lock(m_ModelMutex);
+    GetImpl().OnKeyToggleThreads();
   }
   else if (p_Key == keyToggleTop)
   {
@@ -4865,6 +5324,12 @@ void UiModel::MessageHandler(std::shared_ptr<ServiceMessage> p_ServiceMessage)
   GetImpl().MessageHandler(p_ServiceMessage);
 }
 
+std::vector<ChatThreadInfo> UiModel::GetThreadVec(const std::string& p_ProfileId, const std::string& p_ChatId)
+{
+  std::unique_lock<owned_mutex> lock(m_ModelMutex);
+  return GetImpl().GetThreadVec(p_ProfileId, p_ChatId);
+}
+
 bool UiModel::Process()
 {
   std::unique_lock<owned_mutex> lock(m_ModelMutex);
@@ -5036,6 +5501,36 @@ std::vector<std::pair<std::string, std::string>>& UiModel::GetChatVecLocked()
   return GetImpl().GetChatVec();
 }
 
+std::vector<ChatThreadInfo> UiModel::GetThreadVecLocked(const std::string& p_ProfileId, const std::string& p_ChatId)
+{
+  nc_assert(m_ModelMutex.owns_lock());
+  return GetImpl().GetThreadVec(p_ProfileId, p_ChatId);
+}
+
+std::string UiModel::GetCurrentThreadLocked(const std::string& p_ProfileId, const std::string& p_ChatId)
+{
+  nc_assert(m_ModelMutex.owns_lock());
+  return GetImpl().GetCurrentThread(p_ProfileId, p_ChatId);
+}
+
+int UiModel::GetCurrentThreadIndexLocked(const std::string& p_ProfileId, const std::string& p_ChatId)
+{
+  nc_assert(m_ModelMutex.owns_lock());
+  return GetImpl().GetCurrentThreadIndex(p_ProfileId, p_ChatId);
+}
+
+bool UiModel::GetThreadsFocusLocked()
+{
+  nc_assert(m_ModelMutex.owns_lock());
+  return GetImpl().GetThreadsFocus();
+}
+
+bool UiModel::IsThreadedChatLocked(const std::string& p_ProfileId, const std::string& p_ChatId)
+{
+  nc_assert(m_ModelMutex.owns_lock());
+  return GetImpl().IsThreadedChat(p_ProfileId, p_ChatId);
+}
+
 std::string UiModel::GetContactListNameLocked(const std::string& p_ProfileId, const std::string& p_ChatId,
                                               bool p_AllowId, bool p_AllowAlias)
 {
@@ -5194,10 +5689,37 @@ void UiModel::OnStatusUpdateLocked(uint32_t p_Status)
 
 void UiModel::OnKeyGotoChat()
 {
-  // Pre-req
+  bool threadsFocus = false;
+  std::string profileId;
+  std::string chatId;
   {
     std::unique_lock<owned_mutex> lock(m_ModelMutex);
     if (GetImpl().GetEditMessageActive()) return;
+
+    profileId = GetImpl().GetCurrentChat().first;
+    chatId = GetImpl().GetCurrentChat().second;
+    threadsFocus = (GetImpl().GetThreadsFocus() && IsThreadedChatLocked(profileId, chatId) &&
+                    !GetThreadVecLocked(profileId, chatId).empty());
+  }
+
+  if (threadsFocus)
+  {
+    // Open modal dialog without model mutex held
+    UiDialogParams params(this, "Go to Thread", 0.75, 0.65);
+    UiThreadListDialog threadDialog(params, profileId, chatId);
+    if (threadDialog.Run())
+    {
+      UiThreadListItem selectedThreadItem = threadDialog.GetSelectedThreadItem();
+      std::unique_lock<owned_mutex> lock(m_ModelMutex);
+      GetImpl().SelectThreadById(profileId, chatId, selectedThreadItem.topicId);
+    }
+    else
+    {
+      std::unique_lock<owned_mutex> lock(m_ModelMutex);
+      GetImpl().ReinitView();
+    }
+
+    return;
   }
 
   // Open modal dialog without model mutex held
