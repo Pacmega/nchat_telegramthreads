@@ -39,6 +39,7 @@
 #include "qrutil.h"
 #include "status.h"
 #include "strutil.h"
+#include "tgtopic.h"
 #include "timeutil.h"
 
 // TDLib's history view (consulted on startup) has the message erased, so the
@@ -51,6 +52,13 @@
 // #define SIMULATED_SPONSORED_MESSAGES
 
 static const int s_TdlibDate = 20261009;
+
+// Maximum number of topics fetched in one getForumTopics request
+static const int32_t s_ForumTopicsLimit = 100;
+
+// Supergroup chat ids are "-100" followed by the supergroup id (TDLib
+// DialogId::ZERO_CHANNEL_ID), while getSupergroup expects the plain id
+static const int64_t s_ZeroChannelChatId = -1000000000000;
 
 namespace detail
 {
@@ -204,7 +212,16 @@ private:
   bool IsGroup(int64_t p_UserId);
   bool IsSelf(int64_t p_UserId);
   std::string GetContactName(int64_t p_UserId);
-  void GetChatHistory(int64_t p_ChatId, int64_t p_FromMsgId, int32_t p_Offset, int32_t p_Limit, bool p_Sequence);
+  void GetChatHistory(int64_t p_ChatId, int64_t p_FromMsgId, int32_t p_Offset, int32_t p_Limit, bool p_Sequence,
+                      int32_t p_ForumTopicId = 0);
+  void GetThreads(int64_t p_ChatId);
+  void DetectThreadedChat(int64_t p_ChatId);
+  void ProbeSuperGroupThreaded(int64_t p_ChatId);
+  void FetchForumTopics(int64_t p_ChatId, bool p_IsProbe);
+  void SetChatThreaded(int64_t p_ChatId, bool p_IsThreaded);
+  void SendThreadsNotify(int64_t p_ChatId);
+  void HandleUpdateForumTopicInfo(td::td_api::object_ptr<td::td_api::forumTopicInfo>&& p_Info);
+  void HandleUpdateForumTopic(int64_t p_ChatId, int32_t p_ForumTopicId, int32_t p_UnreadMentionCount);
   td::td_api::object_ptr<td::td_api::formattedText> GetFormattedText(const std::string& p_Text);
   td::td_api::object_ptr<td::td_api::inputMessageText> GetMessageText(const std::string& p_Text);
   std::string ConvertMarkdownV2ToV1(const std::string& p_Str);
@@ -241,6 +258,9 @@ private:
   std::map<int64_t, std::set<int64_t>> m_UnreadOutboxMessages;
   std::map<int64_t, ContactInfo> m_ContactInfos;
   std::map<int64_t, ChatType> m_ChatTypes;
+  std::map<int64_t, bool> m_ThreadedChats;   // chat id -> chat is threaded (forum-style)
+  std::map<int64_t, bool> m_ThreadedKnown;   // chat id -> threadedness has been determined
+  std::map<int64_t, std::map<int32_t, ForumTopicData>> m_ForumTopics; // topic snapshot per chat
   int64_t m_CurrentChat = 0;
   const char m_SponsoredMessageMsgIdPrefix = '+';
   std::map<std::string, std::set<std::string>> m_SponsoredMessageIds;
@@ -355,7 +375,8 @@ bool TgChat::Impl::HasFeature(ProtocolFeature p_ProtocolFeature) const
     FeatureAutoGetContactsOnLogin |
     FeaturePinChat |
     FeatureArchiveChat |
-    FeaturePinMessage;
+    FeaturePinMessage |
+    FeatureThreads;
   return (p_ProtocolFeature & customFeatures);
 }
 
@@ -871,8 +892,11 @@ void TgChat::Impl::PerformRequest(std::shared_ptr<RequestMessage> p_RequestMessa
         std::shared_ptr<GetMessagesRequest> getMessagesRequest =
           std::static_pointer_cast<GetMessagesRequest>(p_RequestMessage);
 
-        if (!getMessagesRequest->fromMsgId.empty() ||
-            (getMessagesRequest->limit == std::numeric_limits<int>::max()))
+        // the per-chat message cache is not topic aware, so topic-scoped
+        // requests are always fetched from the server
+        if (getMessagesRequest->topicId.empty() &&
+            (!getMessagesRequest->fromMsgId.empty() ||
+             (getMessagesRequest->limit == std::numeric_limits<int>::max())))
         {
           if (MessageCache::FetchMessagesFrom(m_ProfileId, getMessagesRequest->chatId,
                                               getMessagesRequest->fromMsgId,
@@ -887,7 +911,16 @@ void TgChat::Impl::PerformRequest(std::shared_ptr<RequestMessage> p_RequestMessa
         int32_t offset = 0;
         int32_t limit = getMessagesRequest->limit;
         bool sequence = true; // in-sequence history request
-        GetChatHistory(chatId, fromMsgId, offset, limit, sequence);
+
+        if (!getMessagesRequest->topicId.empty())
+        {
+          GetChatHistory(chatId, fromMsgId, offset, limit, sequence,
+                         StrUtil::NumFromHex<int32_t>(getMessagesRequest->topicId));
+        }
+        else
+        {
+          GetChatHistory(chatId, fromMsgId, offset, limit, sequence);
+        }
       }
       break;
 
@@ -901,6 +934,12 @@ void TgChat::Impl::PerformRequest(std::shared_ptr<RequestMessage> p_RequestMessa
 
         auto send_message = td::td_api::make_object<td::td_api::sendMessage>();
         send_message->chat_id_ = StrUtil::NumFromHex<int64_t>(sendMessageRequest->chatId);
+
+        // topic-less sends are left without a topic id and land in General
+        if (!sendMessageRequest->chatMessage.topicId.empty())
+        {
+          send_message->topic_id_ = TgTopic::TopicIdFromHex(sendMessageRequest->chatMessage.topicId);
+        }
 
         if (!sendMessageRequest->chatMessage.quotedId.empty())
         {
@@ -1740,6 +1779,80 @@ void TgChat::Impl::PerformRequest(std::shared_ptr<RequestMessage> p_RequestMessa
       }
       break;
 
+    case GetThreadsRequestType:
+      {
+        LOG_DEBUG("Get threads");
+        std::shared_ptr<GetThreadsRequest> getThreadsRequest =
+          std::static_pointer_cast<GetThreadsRequest>(p_RequestMessage);
+
+        int64_t chatId = StrUtil::NumFromHex<int64_t>(getThreadsRequest->chatId);
+        GetThreads(chatId);
+      }
+      break;
+
+    case CreateThreadRequestType:
+      {
+        LOG_DEBUG("Create thread");
+        std::shared_ptr<CreateThreadRequest> createThreadRequest =
+          std::static_pointer_cast<CreateThreadRequest>(p_RequestMessage);
+        int64_t chatId = StrUtil::NumFromHex<int64_t>(createThreadRequest->chatId);
+
+        // tdlib requires a non-empty name (1-128 chars) even with an implicit
+        // name, so the UI derives one from the first words of the message
+        auto create_forum_topic = td::td_api::make_object<td::td_api::createForumTopic>(
+          chatId, createThreadRequest->name, true /*is_name_implicit_*/, nullptr /*icon_*/);
+
+        SendQuery(std::move(create_forum_topic),
+                  [this, createThreadRequest, chatId](Object object)
+        {
+          if (object->get_id() == td::td_api::error::ID)
+          {
+            auto error = td::move_tl_object_as<td::td_api::error>(object);
+            LOG_WARNING("create forum topic failed %s: %d \"%s\"", createThreadRequest->chatId.c_str(),
+                        error->code_, error->message_.c_str());
+
+            // covers BOT_FORUM_CREATE_FORBIDDEN and any other topic creation
+            // error; the UI falls back to a topic-less send for this chat
+            std::shared_ptr<NewThreadNotify> newThreadNotify =
+              std::make_shared<NewThreadNotify>(m_ProfileId);
+            newThreadNotify->chatId = createThreadRequest->chatId;
+            newThreadNotify->success = false;
+            CallMessageHandler(newThreadNotify);
+            return;
+          }
+
+          auto forumTopicInfo = td::move_tl_object_as<td::td_api::forumTopicInfo>(object);
+          if (!forumTopicInfo) return;
+
+          ForumTopicData forumTopicData = TgTopic::ForumTopicDataFromInfo(*forumTopicInfo);
+          ChatThreadInfo threadInfo = forumTopicData.info;
+
+          bool hasSnapshot = false;
+          {
+            std::lock_guard<std::mutex> lock(m_Mutex);
+            auto topicsIt = m_ForumTopics.find(chatId);
+            if (topicsIt != m_ForumTopics.end())
+            {
+              topicsIt->second[forumTopicInfo->forum_topic_id_] = std::move(forumTopicData);
+              hasSnapshot = true;
+            }
+          }
+
+          if (hasSnapshot)
+          {
+            SendThreadsNotify(chatId);
+          }
+
+          std::shared_ptr<NewThreadNotify> newThreadNotify =
+            std::make_shared<NewThreadNotify>(m_ProfileId);
+          newThreadNotify->chatId = createThreadRequest->chatId;
+          newThreadNotify->thread = std::move(threadInfo);
+          newThreadNotify->success = true;
+          CallMessageHandler(newThreadNotify);
+        });
+      }
+      break;
+
     default:
       LOG_DEBUG("unknown request message %d", p_RequestMessage->GetMessageType());
       break;
@@ -2355,6 +2468,26 @@ void TgChat::Impl::ProcessUpdate(td::td_api::object_ptr<td::td_api::Object> upda
   [](td::td_api::updateFile&)
   {
     LOG_TRACE("update file");
+  },
+  [this](td::td_api::updateForumTopicInfo& update_forum_topic_info)
+  {
+    LOG_TRACE("update forum topic info");
+
+    HandleUpdateForumTopicInfo(std::move(update_forum_topic_info.info_));
+  },
+  [this](td::td_api::updateForumTopic& update_forum_topic)
+  {
+    LOG_TRACE("update forum topic");
+
+    HandleUpdateForumTopic(update_forum_topic.chat_id_, update_forum_topic.forum_topic_id_,
+                           update_forum_topic.unread_mention_count_);
+  },
+  [](td::td_api::updateTopicMessageCount&)
+  {
+    LOG_TRACE("update topic message count");
+
+    // tdlib emits this update for saved messages and channel direct messages
+    // chat topics only, not for forum topics, so there is nothing to update
   },
   [](auto& anyupdate)
   {
@@ -3668,6 +3801,16 @@ void TgChat::Impl::TdMessageConvert(td::td_api::message& p_TdMessage, ChatMessag
     p_ChatMessage.quotedId = StrUtil::NumToHex(reply_to_message.message_id_);
   }
 
+  // messages of the General topic arrive without a topic id in threaded bot
+  // chats, and with messageTopicForum{1} in forum supergroups
+  p_ChatMessage.topicId = TgTopic::TopicIdToHex(p_TdMessage.topic_id_.get());
+  if (!p_ChatMessage.topicId.empty())
+  {
+    // a chat producing topic-tagged messages is a threaded chat (passive
+    // detection); its thread list is fetched once, on first detection
+    DetectThreadedChat(p_TdMessage.chat_id_);
+  }
+
   p_ChatMessage.hasMention = p_TdMessage.contains_unread_mention_;
 
   if (IsSelf(p_TdMessage.chat_id_))
@@ -3973,12 +4116,22 @@ std::string TgChat::Impl::GetContactName(int64_t p_UserId)
 }
 
 void TgChat::Impl::GetChatHistory(int64_t p_ChatId, int64_t p_FromMsgId, int32_t p_Offset, int32_t p_Limit,
-                                  bool p_Sequence)
+                                  bool p_Sequence, int32_t p_ForumTopicId)
 {
   // *INDENT-OFF*
   Status::Set(m_ProfileId, Status::FlagFetching);
-  SendQuery(td::td_api::make_object<td::td_api::getChatHistory>(p_ChatId, p_FromMsgId, p_Offset,
-                                                                p_Limit, false),
+  td::td_api::object_ptr<td::td_api::Function> query;
+  if (p_ForumTopicId != 0)
+  {
+    query = td::td_api::make_object<td::td_api::getForumTopicHistory>(p_ChatId, p_ForumTopicId,
+                                                                      p_FromMsgId, p_Offset, p_Limit);
+  }
+  else
+  {
+    query = td::td_api::make_object<td::td_api::getChatHistory>(p_ChatId, p_FromMsgId, p_Offset,
+                                                                p_Limit, false);
+  }
+  SendQuery(std::move(query),
   [this, p_ChatId, p_FromMsgId, p_Offset, p_Sequence](Object object)
   {
     Status::Clear(m_ProfileId, Status::FlagFetching);
@@ -4006,6 +4159,241 @@ void TgChat::Impl::GetChatHistory(int64_t p_ChatId, int64_t p_FromMsgId, int32_t
     CallMessageHandler(newMessagesNotify);
   });
   // *INDENT-ON*
+}
+
+void TgChat::Impl::GetThreads(int64_t p_ChatId)
+{
+  bool isKnown = false;
+  bool isThreaded = false;
+  {
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    auto knownIt = m_ThreadedKnown.find(p_ChatId);
+    isKnown = (knownIt != m_ThreadedKnown.end());
+    if (isKnown)
+    {
+      auto threadedIt = m_ThreadedChats.find(p_ChatId);
+      isThreaded = (threadedIt != m_ThreadedChats.end()) && threadedIt->second;
+    }
+  }
+
+  if (!isKnown)
+  {
+    // Probe the threadedness of chats with unknown state, and cache the
+    // result. Private chats are threaded iff the peer is a forum-view bot;
+    // getForumTopics succeeds exactly in that case and doubles as the thread
+    // list fetch. Supergroups are threaded iff they are a forum, detected via
+    // getSupergroup. Other chat types are never threaded.
+    auto chatTypeIt = m_ChatTypes.find(p_ChatId);
+    if (chatTypeIt == m_ChatTypes.end())
+    {
+      LOG_WARNING("unknown chat type %lld, cannot determine threadedness", p_ChatId);
+      return;
+    }
+
+    switch (chatTypeIt->second)
+    {
+      case ChatPrivate:
+        FetchForumTopics(p_ChatId, true /*p_IsProbe*/);
+        return;
+
+      case ChatSuperGroup:
+        ProbeSuperGroupThreaded(p_ChatId);
+        return;
+
+      default:
+        SetChatThreaded(p_ChatId, false);
+        SendThreadsNotify(p_ChatId);
+        return;
+    }
+  }
+
+  if (isThreaded)
+  {
+    FetchForumTopics(p_ChatId, false /*p_IsProbe*/);
+  }
+  else
+  {
+    SendThreadsNotify(p_ChatId);
+  }
+}
+
+void TgChat::Impl::DetectThreadedChat(int64_t p_ChatId)
+{
+  {
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    if (m_ThreadedKnown.count(p_ChatId) > 0) return;
+
+    // a chat producing topic-tagged messages is a threaded chat (passive
+    // detection); its thread list is fetched once, on first detection
+    m_ThreadedKnown[p_ChatId] = true;
+    m_ThreadedChats[p_ChatId] = true;
+  }
+
+  std::shared_ptr<GetThreadsRequest> getThreadsRequest = std::make_shared<GetThreadsRequest>();
+  getThreadsRequest->chatId = StrUtil::NumToHex(p_ChatId);
+  SendRequest(getThreadsRequest);
+}
+
+void TgChat::Impl::ProbeSuperGroupThreaded(int64_t p_ChatId)
+{
+  auto get_supergroup = td::td_api::make_object<td::td_api::getSupergroup>();
+  get_supergroup->supergroup_id_ = (s_ZeroChannelChatId - p_ChatId);
+  SendQuery(std::move(get_supergroup),
+            [this, p_ChatId](Object object)
+  {
+    bool isThreaded = false;
+    if (object->get_id() == td::td_api::supergroup::ID)
+    {
+      auto supergroup = td::move_tl_object_as<td::td_api::supergroup>(object);
+      isThreaded = (supergroup != nullptr) && supergroup->is_forum_;
+    }
+
+    SetChatThreaded(p_ChatId, isThreaded);
+    if (isThreaded)
+    {
+      FetchForumTopics(p_ChatId, false /*p_IsProbe*/);
+    }
+    else
+    {
+      SendThreadsNotify(p_ChatId);
+    }
+  });
+}
+
+void TgChat::Impl::FetchForumTopics(int64_t p_ChatId, bool p_IsProbe)
+{
+  LOG_DEBUG("get forum topics %lld", p_ChatId);
+  auto get_forum_topics = td::td_api::make_object<td::td_api::getForumTopics>(
+    p_ChatId, "" /*query_*/, 0 /*offset_date_*/, 0 /*offset_message_id_*/, 0 /*offset_forum_topic_id_*/,
+    s_ForumTopicsLimit /*limit_*/);
+  SendQuery(std::move(get_forum_topics),
+            [this, p_ChatId, p_IsProbe](Object object)
+  {
+    if (object->get_id() == td::td_api::error::ID)
+    {
+      auto error = td::move_tl_object_as<td::td_api::error>(object);
+      LOG_DEBUG("get forum topics failed %lld: %d \"%s\"", p_ChatId, error->code_, error->message_.c_str());
+
+      if (p_IsProbe)
+      {
+        // the chat is not a forum-view bot chat; inform the ui with an empty
+        // snapshot so the threadedness is considered known
+        SetChatThreaded(p_ChatId, false);
+        SendThreadsNotify(p_ChatId);
+      }
+
+      return;
+    }
+
+    auto forumTopics = td::move_tl_object_as<td::td_api::forumTopics>(object);
+    if (!forumTopics)
+    {
+      if (p_IsProbe)
+      {
+        SetChatThreaded(p_ChatId, false);
+        SendThreadsNotify(p_ChatId);
+      }
+
+      return;
+    }
+
+    SetChatThreaded(p_ChatId, true);
+    {
+      std::lock_guard<std::mutex> lock(m_Mutex);
+      m_ForumTopics[p_ChatId] = TgTopic::ForumTopicsFromTd(*forumTopics);
+    }
+
+    SendThreadsNotify(p_ChatId);
+  });
+}
+
+void TgChat::Impl::SetChatThreaded(int64_t p_ChatId, bool p_IsThreaded)
+{
+  std::lock_guard<std::mutex> lock(m_Mutex);
+  m_ThreadedKnown[p_ChatId] = true;
+  m_ThreadedChats[p_ChatId] = p_IsThreaded;
+}
+
+void TgChat::Impl::SendThreadsNotify(int64_t p_ChatId)
+{
+  std::vector<ChatThreadInfo> threads;
+  {
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    auto topicsIt = m_ForumTopics.find(p_ChatId);
+    if (topicsIt != m_ForumTopics.end())
+    {
+      threads = TgTopic::ThreadInfosFromForumTopics(topicsIt->second);
+    }
+  }
+
+  LOG_DEBUG("notify threads %lld count %d", p_ChatId, (int)threads.size());
+  for (const ChatThreadInfo& thread : threads)
+  {
+    LOG_TRACE("notify thread %lld id %s name \"%s\" unread %d mentions %d general %d closed %d hidden %d",
+              p_ChatId, thread.id.c_str(), thread.name.c_str(), thread.unreadCount,
+              thread.unreadMentionCount, thread.isGeneral, thread.isClosed, thread.isHidden);
+  }
+
+  std::shared_ptr<NewThreadsNotify> newThreadsNotify =
+    std::make_shared<NewThreadsNotify>(m_ProfileId);
+  newThreadsNotify->chatId = StrUtil::NumToHex(p_ChatId);
+  newThreadsNotify->threads = std::move(threads);
+  CallMessageHandler(newThreadsNotify);
+}
+
+void TgChat::Impl::HandleUpdateForumTopicInfo(td::td_api::object_ptr<td::td_api::forumTopicInfo>&& p_Info)
+{
+  if (!p_Info) return;
+
+  const int64_t chatId = p_Info->chat_id_;
+  bool hasSnapshot = false;
+  {
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    auto topicsIt = m_ForumTopics.find(chatId);
+    if (topicsIt == m_ForumTopics.end()) return; // no thread snapshot for this chat
+
+    const int32_t forumTopicId = p_Info->forum_topic_id_;
+    ForumTopicData forumTopicData = TgTopic::ForumTopicDataFromInfo(*p_Info);
+    auto topicIt = topicsIt->second.find(forumTopicId);
+    if (topicIt != topicsIt->second.end())
+    {
+      // the info update carries no topic order, counters or last message;
+      // keep the snapshot's
+      forumTopicData.order = topicIt->second.order;
+      forumTopicData.info.unreadCount = topicIt->second.info.unreadCount;
+      forumTopicData.info.unreadMentionCount = topicIt->second.info.unreadMentionCount;
+      forumTopicData.info.lastMessageTime = topicIt->second.info.lastMessageTime;
+    }
+
+    topicsIt->second[forumTopicId] = std::move(forumTopicData);
+    hasSnapshot = true;
+  }
+
+  if (hasSnapshot)
+  {
+    SendThreadsNotify(chatId);
+  }
+}
+
+void TgChat::Impl::HandleUpdateForumTopic(int64_t p_ChatId, int32_t p_ForumTopicId, int32_t p_UnreadMentionCount)
+{
+  bool hasTopic = false;
+  {
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    auto topicsIt = m_ForumTopics.find(p_ChatId);
+    if (topicsIt == m_ForumTopics.end()) return; // no thread snapshot for this chat
+
+    auto topicIt = topicsIt->second.find(p_ForumTopicId);
+    if (topicIt == topicsIt->second.end()) return;
+
+    topicIt->second.info.unreadMentionCount = p_UnreadMentionCount;
+    hasTopic = true;
+  }
+
+  if (hasTopic)
+  {
+    SendThreadsNotify(p_ChatId);
+  }
 }
 
 td::td_api::object_ptr<td::td_api::formattedText> TgChat::Impl::GetFormattedText(const std::string& p_Text)

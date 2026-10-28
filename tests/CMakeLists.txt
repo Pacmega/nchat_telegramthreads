@@ -33,3 +33,17 @@ endmacro()
 # Unit tests
 add_unit_test(test001)
 add_unit_test(test002)
+
+# test003 additionally covers the message cache schema migration and the tgchat
+# forum topic conversions, and therefore requires the tgchat library (tdlib)
+if(HAS_TELEGRAM)
+  add_unit_test(test003)
+
+  # Headers
+  target_include_directories(test003 PRIVATE "../lib/tgchat/src")
+  target_include_directories(test003 PRIVATE "../lib/tgchat/ext/td")
+  target_include_directories(test003 PRIVATE "../lib/ncutil/ext/sqlite_modern_cpp/hdr")
+
+  # Linking
+  target_link_libraries(test003 PUBLIC tgchat)
+endif()
