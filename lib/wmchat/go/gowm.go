@@ -84,6 +84,13 @@ var (
 	sendTypes   map[int]int                  = make(map[int]int)
 	namesSynced map[int]bool                 = make(map[int]bool)
 	passkeyWait map[int]bool                 = make(map[int]bool)
+	// archivedChats tracks whether chats are archived per locally stored app state,
+	// to support auto-return of archived chats on new messages (in-memory only)
+	archivedChats map[int]map[string]bool = make(map[int]map[string]bool)
+	// unarchiveChats tracks the whatsapp app state unarchive-chats setting, i.e.
+	// whether archived chats are unarchived (returned to the chat list) upon new
+	// messages, corresponding to the "keep chats archived" app setting being off
+	unarchiveChats map[int]map[string]bool = make(map[int]map[string]bool)
 )
 
 // keep in sync with enum AttachmentSendType in appconfig.h
@@ -148,6 +155,10 @@ func GetExpirationsStorePath(connPath string) string {
 	return connPath + "/expirations.dat"
 }
 
+func GetUnarchiveChatsStorePath(connPath string) string {
+	return connPath + "/unarchivechats.dat"
+}
+
 func AddConn(conn *whatsmeow.Client, path string, sendType int) int {
 	mx.Lock()
 	var connId int = nextConnId
@@ -162,6 +173,7 @@ func AddConn(conn *whatsmeow.Client, path string, sendType int) int {
 	handlers[connId] = &WmEventHandler{connId}
 	sendTypes[connId] = sendType
 	namesSynced[connId] = false
+	unarchiveChats[connId], _ = LoadMap[bool](GetUnarchiveChatsStorePath(path))
 	mx.Unlock()
 	return connId
 }
@@ -171,6 +183,7 @@ func RemoveConn(connId int) {
 	SaveMap(GetContactsStorePath(paths[connId]), contacts[connId])
 	SaveMap(GetSendersStorePath(paths[connId]), senders[connId])
 	SaveMap(GetExpirationsStorePath(paths[connId]), expirations[connId])
+	SaveMap(GetUnarchiveChatsStorePath(paths[connId]), unarchiveChats[connId])
 	delete(clients, connId)
 	delete(paths, connId)
 	delete(contacts, connId)
@@ -181,6 +194,8 @@ func RemoveConn(connId int) {
 	delete(handlers, connId)
 	delete(sendTypes, connId)
 	delete(namesSynced, connId)
+	delete(archivedChats, connId)
+	delete(unarchiveChats, connId)
 	mx.Unlock()
 }
 
@@ -355,6 +370,45 @@ func SetExpiration(connId int, chatId string, expiration uint32) {
 	}
 	LOG_TRACE(fmt.Sprintf("set expiration %s %d", chatId, expiration))
 	chatExpirations[chatId] = expiration
+}
+
+// GetChatArchived returns whether a chat is archived per locally stored app
+// state, and whether the value is known (tracked this session)
+func GetChatArchived(connId int, chatId string) (archived bool, known bool) {
+	mx.Lock()
+	archived, known = archivedChats[connId][chatId]
+	mx.Unlock()
+	return archived, known
+}
+
+func SetChatArchived(connId int, chatId string, archived bool) {
+	mx.Lock()
+	if archivedChats[connId] == nil {
+		archivedChats[connId] = make(map[string]bool)
+	}
+	archivedChats[connId][chatId] = archived
+	mx.Unlock()
+}
+
+// GetUnarchiveChats returns the app state unarchive-chats setting (i.e. the
+// "keep chats archived" app setting being off), and whether the value is known.
+// Until known, chats are handled per the whatsapp default of keeping archived
+// chats archived.
+func GetUnarchiveChats(connId int) (unarchiveChatsSetting bool, known bool) {
+	mx.Lock()
+	unarchiveChatsSetting, known = unarchiveChats[connId]["unarchiveChats"]
+	mx.Unlock()
+	return unarchiveChatsSetting, known
+}
+
+func SetUnarchiveChats(connId int, unarchiveChatsSetting bool) {
+	mx.Lock()
+	if unarchiveChats[connId] == nil {
+		unarchiveChats[connId] = make(map[string]bool)
+	}
+	unarchiveChats[connId]["unarchiveChats"] = unarchiveChatsSetting
+	mx.Unlock()
+	LOG_DEBUG(fmt.Sprintf("unarchive chats setting %t", unarchiveChatsSetting))
 }
 
 // GetMessageExpiration returns the disappearing timer in a message's context
@@ -894,6 +948,12 @@ func (handler *WmEventHandler) HandleEvent(rawEvt interface{}) {
 		LOG_TRACE(fmt.Sprintf("%#v", evt))
 		handler.HandlePin(evt)
 
+	case *events.UnarchiveChatsSetting:
+		// track whether archived chats are to be returned to the chat list upon
+		// new messages ("keep chats archived" app setting is off)
+		LOG_TRACE(fmt.Sprintf("%#v", evt))
+		SetUnarchiveChats(handler.connId, evt.Action.GetUnarchiveChats())
+
 	case *events.ClientOutdated:
 		LOG_TRACE(fmt.Sprintf("%#v", evt))
 		handler.HandleClientOutdated()
@@ -966,6 +1026,12 @@ func (handler *WmEventHandler) HandleUndecryptableMessage(evt *events.Undecrypta
 	}
 
 	messageInfo := evt.Info
+
+	// auto-return archived chat if enabled via the unarchive-chats setting
+	if unarchiveChatsSetting, known := GetUnarchiveChats(handler.connId); known && unarchiveChatsSetting {
+		handler.AutoReturnArchivedChat(client, messageInfo)
+	}
+
 	chatId := GetChatId(client, &messageInfo.Chat, &messageInfo.Sender)
 	msgId := messageInfo.ID
 	fromMe := messageInfo.IsFromMe
@@ -1098,6 +1164,7 @@ func (handler *WmEventHandler) HandleHistorySync(historySync *events.HistorySync
 
 			LOG_TRACE(fmt.Sprintf("Call CWmNewChatsNotify %s muted=%t pinned=%t archived=%t",
 				chatId, isMuted, isPinned, isArchived))
+			SetChatArchived(handler.connId, chatId, isArchived)
 			CWmNewChatsNotify(handler.connId, chatId, isUnread, BoolToInt(isMuted), BoolToInt(isPinned), BoolToInt(isArchived), lastMessageTime)
 		} else {
 			LOG_TRACE(fmt.Sprintf("Skip CWmNewChatsNotify %s %d", chatId, len(syncMessages)))
@@ -1271,6 +1338,10 @@ func (handler *WmEventHandler) HandleArchive(archive *events.Archive) {
 	}
 
 	isArchived := archiveAction.GetArchived()
+	SetChatArchived(connId, chatId, isArchived)
+
+	messageRange := archiveAction.GetMessageRange()
+	LOG_TRACE(fmt.Sprintf("archive chat action %s %t %d", chatId, isArchived, messageRange.GetLastMessageTimestamp()))
 
 	LOG_TRACE(fmt.Sprintf("Call CWmUpdateArchivedNotify %s %t", chatId, isArchived))
 	CWmUpdateArchivedNotify(connId, chatId, BoolToInt(isArchived))
@@ -1689,7 +1760,64 @@ func GetContactCards(contacts []*waE2E.ContactMessage) []ContactCard {
 	return cards
 }
 
+// GetChatSettingsArchived returns whether a chat is archived according to the
+// locally stored app state. As app state stores settings under lid-based jids,
+// that jid form is checked as fallback for phone number based jids.
+func GetChatSettingsArchived(client *whatsmeow.Client, chatJid types.JID) bool {
+	ctx := context.TODO()
+	settings, setErr := client.Store.ChatSettings.GetChatSettings(ctx, chatJid)
+	if setErr != nil {
+		LOG_WARNING(fmt.Sprintf("get chat settings failed %#v", setErr))
+	}
+	if !settings.Found && chatJid.Server == types.DefaultUserServer {
+		if lidJid, lidErr := client.Store.LIDs.GetLIDForPN(ctx, chatJid); lidErr == nil && !lidJid.IsEmpty() {
+			settings, setErr = client.Store.ChatSettings.GetChatSettings(ctx, lidJid)
+			if setErr != nil {
+				LOG_WARNING(fmt.Sprintf("get chat settings by lid failed %#v", setErr))
+			}
+		}
+	}
+	return settings.Found && settings.Archived
+}
+
+// AutoReturnArchivedChat replicates the whatsapp app behavior of returning an
+// archived chat to the chat list when a new message arrives, when the
+// "keep chats archived" app setting is off. The chat is only unarchived in the
+// local view; the server-side archived flag is left unchanged, just like the
+// whatsapp app does.
+func (handler *WmEventHandler) AutoReturnArchivedChat(client *whatsmeow.Client, messageInfo types.MessageInfo) {
+	connId := handler.connId
+	if client == nil {
+		LOG_WARNING("client is nil")
+		return
+	}
+
+	chatId := GetChatId(client, &messageInfo.Chat, &messageInfo.Sender)
+	isArchived, known := GetChatArchived(connId, chatId)
+	if !known {
+		isArchived = GetChatSettingsArchived(client, messageInfo.Chat)
+		SetChatArchived(connId, chatId, isArchived)
+	}
+
+	if !isArchived {
+		return
+	}
+
+	LOG_TRACE(fmt.Sprintf("auto return archived chat %s", chatId))
+	SetChatArchived(connId, chatId, false)
+	LOG_TRACE(fmt.Sprintf("Call CWmUpdateArchivedNotify %s %t", chatId, false))
+	CWmUpdateArchivedNotify(connId, chatId, BoolToInt(false))
+}
+
 func (handler *WmEventHandler) HandleMessage(messageInfo types.MessageInfo, msg *waE2E.Message, isSyncRead bool) {
+	// auto-return archived chat if enabled via the unarchive-chats setting;
+	// replays of old messages in history sync do not trigger auto-return
+	if !isSyncRead {
+		if unarchiveChatsSetting, known := GetUnarchiveChats(handler.connId); known && unarchiveChatsSetting {
+			handler.AutoReturnArchivedChat(GetClient(handler.connId), messageInfo)
+		}
+	}
+
 	switch {
 	case msg.Conversation != nil || msg.ExtendedTextMessage != nil:
 		handler.HandleTextMessage(messageInfo, msg, isSyncRead)
@@ -2626,6 +2754,11 @@ func WmInit(path string, proxy string, sendType int) int {
 		return -1
 	}
 
+	// emit app state events also on full sync, so that app state downloaded
+	// during initial pairing and other full syncs is made known to nchat,
+	// e.g. the unarchive-chats setting
+	client.EmitAppStateEventsOnFullSync = true
+
 	// set proxy details
 	if len(proxy) > 0 {
 		client.SetProxyAddress(proxy)
@@ -2903,7 +3036,53 @@ func WmLogin(connId int) int {
 	}
 
 	LOG_DEBUG("login ok")
+
+	// fetch app state updates missed while offline; performs a one-time full
+	// sync when the unarchive-chats setting is not yet known, to learn
+	// historical app state such as that setting
+	go SyncAppStates(connId, cli)
+
 	return 0
+}
+
+// SyncAppStates fetches app state updates missed while offline. If the
+// unarchive-chats setting is not yet known, a one-time full sync is performed
+// to learn historical app state, such as that setting.
+func SyncAppStates(connId int, client *whatsmeow.Client) {
+	ctx := context.TODO()
+
+	_, known := GetUnarchiveChats(connId)
+	if known {
+		// fetch app state updates missed while offline
+		for _, name := range appstate.AllPatchNames {
+			if err := client.FetchAppState(ctx, name, false, false); err != nil {
+				LOG_WARNING(fmt.Sprintf("fetch app state %s failed %#v", name, err))
+			}
+		}
+		return
+	}
+
+	// one-time full sync to learn historical app state, such as the
+	// unarchive-chats setting, which is otherwise only updated on new
+	// app state mutations
+	LOG_DEBUG("full sync app state")
+	fullSyncFailed := false
+	for _, name := range appstate.AllPatchNames {
+		if err := client.FetchAppState(ctx, name, true, false); err != nil {
+			LOG_WARNING(fmt.Sprintf("full sync app state %s failed %#v", name, err))
+			fullSyncFailed = true
+		}
+	}
+
+	// mark the setting known using the whatsapp default of keeping archived
+	// chats archived, in case the app state did not include a setting
+	// mutation; it may still be updated by the UnarchiveChatsSetting event
+	// dispatched upon the full sync
+	if !fullSyncFailed {
+		if _, known = GetUnarchiveChats(connId); !known {
+			SetUnarchiveChats(connId, false)
+		}
+	}
 }
 
 func WmLogout(connId int) int {
