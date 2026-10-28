@@ -333,6 +333,7 @@ public:
   std::string chatId;
   std::string senderId; // only required for wmchat
   std::string msgId;
+  std::string topicId; // hex-encoded forum topic id, only required for tgchat
   bool readAllReactions = false;
 };
 

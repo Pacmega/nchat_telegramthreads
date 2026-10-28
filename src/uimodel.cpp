@@ -1229,6 +1229,10 @@ void UiModel::Impl::MarkRead(const std::string& p_ProfileId, const std::string& 
   markMessageReadRequest->chatId = p_ChatId;
   markMessageReadRequest->msgId = p_MsgId;
   markMessageReadRequest->senderId = senderId;
+  if (mit != messages.end())
+  {
+    markMessageReadRequest->topicId = mit->second.topicId;
+  }
   SendProtocolRequest(p_ProfileId, markMessageReadRequest);
 
   // thread unread badges only refresh via a full thread snapshot, so schedule

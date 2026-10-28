@@ -1162,6 +1162,13 @@ void TgChat::Impl::PerformRequest(std::shared_ptr<RequestMessage> p_RequestMessa
           view_messages->message_ids_ = msgIds;
           view_messages->force_read_ = true;
 
+          // reads within a forum topic must use the topic-aware tdlib path,
+          // which updates the topic's read state and unread counters
+          if (!markMessageReadRequest->topicId.empty())
+          {
+            view_messages->source_ = td::td_api::make_object<td::td_api::messageSourceForumTopicHistory>();
+          }
+
           SendQuery(std::move(view_messages),
                     [this, markMessageReadRequest](Object object)
           {
