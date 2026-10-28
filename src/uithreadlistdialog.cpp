@@ -7,6 +7,8 @@
 
 #include "uithreadlistdialog.h"
 
+#include "apputil.h"
+#include "log.h"
 #include "strutil.h"
 #include "uiconfig.h"
 #include "uimodel.h"
@@ -77,6 +79,14 @@ void UiThreadListDialog::UpdateList()
       if (threadInfo.isClosed)
       {
         displayName += " (closed)";
+      }
+
+      // topics may share names (ex. the bot's own "New Chat" topics), so show
+      // the id in developer mode to tell them apart
+      static const bool developerMode = AppUtil::GetDeveloperMode();
+      if (developerMode)
+      {
+        displayName += " [" + threadInfo.id + "]";
       }
 
       UiThreadListItem threadListItem;

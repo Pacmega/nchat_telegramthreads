@@ -5707,18 +5707,18 @@ void UiModel::OnKeyGotoChat()
     // Open modal dialog without model mutex held
     UiDialogParams params(this, "Go to Thread", 0.75, 0.65);
     UiThreadListDialog threadDialog(params, profileId, chatId);
-    if (threadDialog.Run())
+    const bool result = threadDialog.Run();
+
+    std::unique_lock<owned_mutex> lock(m_ModelMutex);
+    if (result)
     {
       UiThreadListItem selectedThreadItem = threadDialog.GetSelectedThreadItem();
-      std::unique_lock<owned_mutex> lock(m_ModelMutex);
       GetImpl().SelectThreadById(profileId, chatId, selectedThreadItem.topicId);
     }
-    else
-    {
-      std::unique_lock<owned_mutex> lock(m_ModelMutex);
-      GetImpl().ReinitView();
-    }
 
+    // repaint regardless of the outcome, clearing the dialog remains (the
+    // selection may be a no-op when the thread was already selected)
+    GetImpl().ReinitView();
     return;
   }
 
