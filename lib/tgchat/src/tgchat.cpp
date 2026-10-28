@@ -60,6 +60,14 @@ static const int32_t s_ForumTopicsLimit = 100;
 // DialogId::ZERO_CHANNEL_ID), while getSupergroup expects the plain id
 static const int64_t s_ZeroChannelChatId = -1000000000000;
 
+// Next page offsets of the last fetched forum topic listing, per chat
+struct ForumTopicsNextOffset
+{
+  int32_t date = 0;
+  int64_t messageId = 0;
+  int32_t topicId = 0;
+};
+
 namespace detail
 {
   template<class... Fs>
@@ -214,12 +222,12 @@ private:
   std::string GetContactName(int64_t p_UserId);
   void GetChatHistory(int64_t p_ChatId, int64_t p_FromMsgId, int32_t p_Offset, int32_t p_Limit, bool p_Sequence,
                       int32_t p_ForumTopicId = 0);
-  void GetThreads(int64_t p_ChatId);
+  void GetThreads(int64_t p_ChatId, bool p_NextPage = false);
   void DetectThreadedChat(int64_t p_ChatId);
   void ProbeSuperGroupThreaded(int64_t p_ChatId);
-  void FetchForumTopics(int64_t p_ChatId, bool p_IsProbe);
+  void FetchForumTopics(int64_t p_ChatId, bool p_IsProbe, bool p_NextPage);
   void SetChatThreaded(int64_t p_ChatId, bool p_IsThreaded);
-  void SendThreadsNotify(int64_t p_ChatId);
+  void SendThreadsNotify(int64_t p_ChatId, bool p_HasMore);
   void HandleUpdateForumTopicInfo(td::td_api::object_ptr<td::td_api::forumTopicInfo>&& p_Info);
   void HandleUpdateForumTopic(int64_t p_ChatId, int32_t p_ForumTopicId, int32_t p_UnreadMentionCount);
   td::td_api::object_ptr<td::td_api::formattedText> GetFormattedText(const std::string& p_Text);
@@ -261,6 +269,8 @@ private:
   std::map<int64_t, bool> m_ThreadedChats;   // chat id -> chat is threaded (forum-style)
   std::map<int64_t, bool> m_ThreadedKnown;   // chat id -> threadedness has been determined
   std::map<int64_t, std::map<int32_t, ForumTopicData>> m_ForumTopics; // topic snapshot per chat
+  std::map<int64_t, ForumTopicsNextOffset> m_ForumTopicsNextOffsets; // pagination offsets per chat
+  std::map<int64_t, bool> m_ForumTopicsPaged; // chat has topics from beyond the first page
   int64_t m_CurrentChat = 0;
   const char m_SponsoredMessageMsgIdPrefix = '+';
   std::map<std::string, std::set<std::string>> m_SponsoredMessageIds;
@@ -1793,7 +1803,7 @@ void TgChat::Impl::PerformRequest(std::shared_ptr<RequestMessage> p_RequestMessa
           std::static_pointer_cast<GetThreadsRequest>(p_RequestMessage);
 
         int64_t chatId = StrUtil::NumFromHex<int64_t>(getThreadsRequest->chatId);
-        GetThreads(chatId);
+        GetThreads(chatId, getThreadsRequest->nextPage);
       }
       break;
 
@@ -1847,7 +1857,7 @@ void TgChat::Impl::PerformRequest(std::shared_ptr<RequestMessage> p_RequestMessa
 
           if (hasSnapshot)
           {
-            SendThreadsNotify(chatId);
+            SendThreadsNotify(chatId, false /*p_HasMore*/);
           }
 
           std::shared_ptr<NewThreadNotify> newThreadNotify =
@@ -4168,7 +4178,7 @@ void TgChat::Impl::GetChatHistory(int64_t p_ChatId, int64_t p_FromMsgId, int32_t
   // *INDENT-ON*
 }
 
-void TgChat::Impl::GetThreads(int64_t p_ChatId)
+void TgChat::Impl::GetThreads(int64_t p_ChatId, bool p_NextPage)
 {
   bool isKnown = false;
   bool isThreaded = false;
@@ -4200,7 +4210,7 @@ void TgChat::Impl::GetThreads(int64_t p_ChatId)
     switch (chatTypeIt->second)
     {
       case ChatPrivate:
-        FetchForumTopics(p_ChatId, true /*p_IsProbe*/);
+        FetchForumTopics(p_ChatId, true /*p_IsProbe*/, false /*p_NextPage*/);
         return;
 
       case ChatSuperGroup:
@@ -4209,18 +4219,18 @@ void TgChat::Impl::GetThreads(int64_t p_ChatId)
 
       default:
         SetChatThreaded(p_ChatId, false);
-        SendThreadsNotify(p_ChatId);
+        SendThreadsNotify(p_ChatId, false /*p_HasMore*/);
         return;
     }
   }
 
   if (isThreaded)
   {
-    FetchForumTopics(p_ChatId, false /*p_IsProbe*/);
+    FetchForumTopics(p_ChatId, false /*p_IsProbe*/, p_NextPage);
   }
   else
   {
-    SendThreadsNotify(p_ChatId);
+    SendThreadsNotify(p_ChatId, false /*p_HasMore*/);
   }
 }
 
@@ -4258,23 +4268,47 @@ void TgChat::Impl::ProbeSuperGroupThreaded(int64_t p_ChatId)
     SetChatThreaded(p_ChatId, isThreaded);
     if (isThreaded)
     {
-      FetchForumTopics(p_ChatId, false /*p_IsProbe*/);
+      FetchForumTopics(p_ChatId, false /*p_IsProbe*/, false /*p_NextPage*/);
     }
     else
     {
-      SendThreadsNotify(p_ChatId);
+      SendThreadsNotify(p_ChatId, false /*p_HasMore*/);
     }
   });
 }
 
-void TgChat::Impl::FetchForumTopics(int64_t p_ChatId, bool p_IsProbe)
+void TgChat::Impl::FetchForumTopics(int64_t p_ChatId, bool p_IsProbe, bool p_NextPage)
 {
-  LOG_DEBUG("get forum topics %lld", p_ChatId);
+  LOG_DEBUG("get forum topics %lld%s", p_ChatId, p_NextPage ? " (next page)" : "");
+
+  int32_t offsetDate = 0;
+  int64_t offsetMessageId = 0;
+  int32_t offsetTopicId = 0;
+  if (p_NextPage)
+  {
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    auto offsetIt = m_ForumTopicsNextOffsets.find(p_ChatId);
+    if (offsetIt == m_ForumTopicsNextOffsets.end())
+    {
+      SendThreadsNotify(p_ChatId, false /*p_HasMore*/);
+      return;
+    }
+
+    offsetDate = offsetIt->second.date;
+    offsetMessageId = offsetIt->second.messageId;
+    offsetTopicId = offsetIt->second.topicId;
+    if ((offsetDate == 0) && (offsetMessageId == 0) && (offsetTopicId == 0))
+    {
+      // no more pages; re-emit the current snapshot so pending states clear
+      SendThreadsNotify(p_ChatId, false /*p_HasMore*/);
+      return;
+    }
+  }
+
   auto get_forum_topics = td::td_api::make_object<td::td_api::getForumTopics>(
-    p_ChatId, "" /*query_*/, 0 /*offset_date_*/, 0 /*offset_message_id_*/, 0 /*offset_forum_topic_id_*/,
-    s_ForumTopicsLimit /*limit_*/);
+    p_ChatId, "" /*query_*/, offsetDate, offsetMessageId, offsetTopicId, s_ForumTopicsLimit /*limit_*/);
   SendQuery(std::move(get_forum_topics),
-            [this, p_ChatId, p_IsProbe](Object object)
+            [this, p_ChatId, p_IsProbe, p_NextPage](Object object)
   {
     if (object->get_id() == td::td_api::error::ID)
     {
@@ -4286,7 +4320,7 @@ void TgChat::Impl::FetchForumTopics(int64_t p_ChatId, bool p_IsProbe)
         // the chat is not a forum-view bot chat; inform the ui with an empty
         // snapshot so the threadedness is considered known
         SetChatThreaded(p_ChatId, false);
-        SendThreadsNotify(p_ChatId);
+        SendThreadsNotify(p_ChatId, false /*p_HasMore*/);
       }
 
       return;
@@ -4298,19 +4332,44 @@ void TgChat::Impl::FetchForumTopics(int64_t p_ChatId, bool p_IsProbe)
       if (p_IsProbe)
       {
         SetChatThreaded(p_ChatId, false);
-        SendThreadsNotify(p_ChatId);
+        SendThreadsNotify(p_ChatId, false /*p_HasMore*/);
       }
 
       return;
     }
 
     SetChatThreaded(p_ChatId, true);
+    bool hasMore = ((forumTopics->next_offset_date_ != 0) || (forumTopics->next_offset_message_id_ != 0) ||
+                    (forumTopics->next_offset_forum_topic_id_ != 0));
     {
       std::lock_guard<std::mutex> lock(m_Mutex);
-      m_ForumTopics[p_ChatId] = TgTopic::ForumTopicsFromTd(*forumTopics);
+      auto pageTopics = TgTopic::ForumTopicsFromTd(*forumTopics);
+      if (p_NextPage || m_ForumTopicsPaged[p_ChatId])
+      {
+        // merge into the accumulated snapshot; a plain refresh must not drop
+        // topics fetched on deeper pages
+        auto& topics = m_ForumTopics[p_ChatId];
+        for (auto& pageTopic : pageTopics)
+        {
+          topics[pageTopic.first] = pageTopic.second;
+        }
+
+        if (p_NextPage)
+        {
+          m_ForumTopicsPaged[p_ChatId] = true;
+        }
+      }
+      else
+      {
+        m_ForumTopics[p_ChatId] = std::move(pageTopics);
+      }
+
+      m_ForumTopicsNextOffsets[p_ChatId] = { forumTopics->next_offset_date_,
+                                             forumTopics->next_offset_message_id_,
+                                             forumTopics->next_offset_forum_topic_id_ };
     }
 
-    SendThreadsNotify(p_ChatId);
+    SendThreadsNotify(p_ChatId, hasMore);
   });
 }
 
@@ -4321,7 +4380,7 @@ void TgChat::Impl::SetChatThreaded(int64_t p_ChatId, bool p_IsThreaded)
   m_ThreadedChats[p_ChatId] = p_IsThreaded;
 }
 
-void TgChat::Impl::SendThreadsNotify(int64_t p_ChatId)
+void TgChat::Impl::SendThreadsNotify(int64_t p_ChatId, bool p_HasMore)
 {
   std::vector<ChatThreadInfo> threads;
   {
@@ -4345,6 +4404,7 @@ void TgChat::Impl::SendThreadsNotify(int64_t p_ChatId)
     std::make_shared<NewThreadsNotify>(m_ProfileId);
   newThreadsNotify->chatId = StrUtil::NumToHex(p_ChatId);
   newThreadsNotify->threads = std::move(threads);
+  newThreadsNotify->hasMoreThreads = p_HasMore;
   CallMessageHandler(newThreadsNotify);
 }
 
@@ -4378,7 +4438,7 @@ void TgChat::Impl::HandleUpdateForumTopicInfo(td::td_api::object_ptr<td::td_api:
 
   if (hasSnapshot)
   {
-    SendThreadsNotify(chatId);
+    SendThreadsNotify(chatId, false /*p_HasMore*/);
   }
 }
 
@@ -4399,7 +4459,7 @@ void TgChat::Impl::HandleUpdateForumTopic(int64_t p_ChatId, int32_t p_ForumTopic
 
   if (hasTopic)
   {
-    SendThreadsNotify(p_ChatId);
+    SendThreadsNotify(p_ChatId, false /*p_HasMore*/);
   }
 }
 

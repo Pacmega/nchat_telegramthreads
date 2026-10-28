@@ -21,6 +21,8 @@
 static const std::string s_GroupId = "The Office_0";
 static const std::string s_ThreadedBotId = "Threadbot_0";
 static const std::string s_ForbiddenBotId = "Forbidden_0";
+static const std::string s_EmptyBotId = "Emptybot_0";
+static const std::string s_PagerBotId = "Pager_0";
 
 extern "C" DuChat* CreateDuChat()
 {
@@ -440,6 +442,47 @@ void DuChat::PerformRequest(std::shared_ptr<RequestMessage> p_RequestMessage)
           s_Messages[s_ForbiddenBotId].push_back(chatMessage);
         }
 
+        // Threaded bot chat without any messages, for the start-a-new-thread hint
+        {
+          ChatInfo chatInfo;
+          chatInfo.id = s_EmptyBotId;
+          chatInfo.lastMessageTime = 1238012000000;
+          newChatsNotify->chatInfos.push_back(chatInfo);
+
+          ContactInfo contactInfo;
+          contactInfo.id = s_EmptyBotId;
+          contactInfo.name = "Empty Bot";
+          newContactsNotify->contactInfos.push_back(contactInfo);
+        }
+
+        // Threaded bot chat with more topics than one page holds
+        {
+          t = 1238022000;
+          ChatInfo chatInfo;
+          chatInfo.id = s_PagerBotId;
+          chatInfo.lastMessageTime = (t * 1000);
+          newChatsNotify->chatInfos.push_back(chatInfo);
+
+          ContactInfo contactInfo;
+          contactInfo.id = s_PagerBotId;
+          contactInfo.name = "Paginated Bot";
+          newContactsNotify->contactInfos.push_back(contactInfo);
+
+          for (int i = 0; i < 120; ++i)
+          {
+            ChatMessage chatMessage;
+            chatMessage.id = s_PagerBotId + "_" + std::to_string(t);
+            chatMessage.senderId = s_PagerBotId;
+            chatMessage.text = "Message in paginated topic " + std::to_string(i + 1) + ".";
+            chatMessage.timeSent = (t * 1000);
+            chatMessage.isOutgoing = false;
+            chatMessage.isRead = true;
+            chatMessage.topicId = StrUtil::NumToHex(1000 + i);
+            s_Messages[s_PagerBotId].push_back(chatMessage);
+            t = t - 100;
+          }
+        }
+
         m_MessageHandler(newChatsNotify);
         m_MessageHandler(newContactsNotify);
       }
@@ -505,6 +548,40 @@ void DuChat::PerformRequest(std::shared_ptr<RequestMessage> p_RequestMessage)
           threadInfo.lastMessageTime = 1238002000000;
           newThreadsNotify->threads.push_back(threadInfo);
         }
+        else if (getThreadsRequest->chatId == s_EmptyBotId)
+        {
+          ChatThreadInfo threadInfo;
+          threadInfo.id = StrUtil::NumToHex(1);
+          threadInfo.name = "General topic";
+          threadInfo.isGeneral = true;
+          threadInfo.lastMessageTime = 1238012000000;
+          newThreadsNotify->threads.push_back(threadInfo);
+        }
+        else if (getThreadsRequest->chatId == s_PagerBotId)
+        {
+          // simulates getForumTopics pagination; refreshes return the
+          // accumulated list as-is, only an explicit next page request extends it
+          static std::vector<ChatThreadInfo> pagerTopics;
+          if ((getThreadsRequest->nextPage || pagerTopics.empty()) && (pagerTopics.size() < 120))
+          {
+            const int firstTopic = (int)pagerTopics.size();
+            for (int i = firstTopic; i < (firstTopic + 10); ++i)
+            {
+              ChatThreadInfo threadInfo;
+              threadInfo.id = StrUtil::NumToHex(1000 + i);
+              threadInfo.name = "Paginated topic " + std::to_string(i + 1);
+              threadInfo.lastMessageTime = (1238022000 - i * 100) * 1000;
+              pagerTopics.push_back(threadInfo);
+            }
+          }
+
+          for (const ChatThreadInfo& threadInfo : pagerTopics)
+          {
+            newThreadsNotify->threads.push_back(threadInfo);
+          }
+
+          newThreadsNotify->hasMoreThreads = (pagerTopics.size() < 120);
+        }
 
         // other chats are not threaded (empty snapshot)
         m_MessageHandler(newThreadsNotify);
@@ -553,7 +630,8 @@ void DuChat::PerformRequest(std::shared_ptr<RequestMessage> p_RequestMessage)
         // the threaded bot chats reply in the topic the message was sent to,
         // making the send routing observable in the ui and logs
         const std::string& chatId = sendMessageRequest->chatId;
-        const bool isThreadedChat = ((chatId == s_ThreadedBotId) || (chatId == s_ForbiddenBotId));
+        const bool isThreadedChat = ((chatId == s_ThreadedBotId) || (chatId == s_ForbiddenBotId) ||
+                                     (chatId == s_PagerBotId));
         if (isThreadedChat)
         {
           static int replyCount = 0;

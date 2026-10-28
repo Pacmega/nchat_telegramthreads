@@ -127,6 +127,7 @@ private:
     bool GetThreadsFocus();
     bool IsThreadedChat(const std::string& p_ProfileId, const std::string& p_ChatId);
     std::string GetCurrentThread(const std::string& p_ProfileId, const std::string& p_ChatId);
+    bool GetThreadCreationForbidden(const std::string& p_ProfileId, const std::string& p_ChatId);
 
     std::unordered_map<std::string, ChatMessage>& GetMessages(const std::string& p_ProfileId,
                                                               const std::string& p_ChatId);
@@ -286,6 +287,8 @@ private:
     std::unordered_map<std::string, std::unordered_map<std::string, std::string>> m_CurrentThread;
     std::unordered_map<std::string, std::unordered_map<std::string, int>> m_CurrentThreadIndex;
     std::unordered_map<std::string, std::unordered_map<std::string, bool>> m_ThreadCreationForbidden;
+    std::unordered_map<std::string, std::unordered_map<std::string, bool>> m_ThreadsHasMore;
+    std::unordered_map<std::string, std::unordered_map<std::string, bool>> m_ThreadsPagePending;
     std::unordered_map<std::string, std::unordered_map<std::string, ChatMessage>> m_PendingThreadSend;
     bool m_ThreadsFocus = false;
 
@@ -393,6 +396,7 @@ public:
   int GetCurrentThreadIndexLocked(const std::string& p_ProfileId, const std::string& p_ChatId);
   bool GetThreadsFocusLocked();
   bool IsThreadedChatLocked(const std::string& p_ProfileId, const std::string& p_ChatId);
+  bool GetThreadCreationForbiddenLocked(const std::string& p_ProfileId, const std::string& p_ChatId);
   std::string GetContactListNameLocked(const std::string& p_ProfileId, const std::string& p_ChatId, bool p_AllowId,
                                        bool p_AllowAlias);
   std::string GetContactNameLocked(const std::string& p_ProfileId, const std::string& p_ChatId);

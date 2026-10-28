@@ -185,7 +185,21 @@ void UiModel::Impl::OnKeyNextThread()
   if (threadVec.empty()) return;
 
   int& threadIndex = m_CurrentThreadIndex[profileId][chatId];
-  if (threadIndex >= ((int)threadVec.size() - 1)) return;
+  if (threadIndex >= ((int)threadVec.size() - 1))
+  {
+    // reaching the end of the list fetches the next page of threads
+    if (m_ThreadsHasMore[profileId][chatId] && !m_ThreadsPagePending[profileId][chatId])
+    {
+      LOG_TRACE("request next thread page");
+      m_ThreadsPagePending[profileId][chatId] = true;
+      std::shared_ptr<GetThreadsRequest> getThreadsRequest = std::make_shared<GetThreadsRequest>();
+      getThreadsRequest->chatId = chatId;
+      getThreadsRequest->nextPage = true;
+      SendProtocolRequest(profileId, getThreadsRequest);
+    }
+
+    return;
+  }
 
   SelectThread(threadIndex + 1);
 }
@@ -1023,8 +1037,21 @@ void UiModel::Impl::OnKeyNextPage()
 
   if (m_ThreadsFocus && IsThreadedChat(m_CurrentChat.first, m_CurrentChat.second))
   {
-    // page through the thread selection
-    SelectThread(std::max(m_CurrentThreadIndex[m_CurrentChat.first][m_CurrentChat.second], 0) + 10);
+    // page through the thread selection, fetching the next page at the end
+    const int lastIndex = (int)m_ThreadVec[m_CurrentChat.first][m_CurrentChat.second].size() - 1;
+    const int targetIndex = std::max(m_CurrentThreadIndex[m_CurrentChat.first][m_CurrentChat.second], 0) + 10;
+    if ((targetIndex > lastIndex) && m_ThreadsHasMore[m_CurrentChat.first][m_CurrentChat.second] &&
+        !m_ThreadsPagePending[m_CurrentChat.first][m_CurrentChat.second])
+    {
+      LOG_TRACE("request next thread page");
+      m_ThreadsPagePending[m_CurrentChat.first][m_CurrentChat.second] = true;
+      std::shared_ptr<GetThreadsRequest> getThreadsRequest = std::make_shared<GetThreadsRequest>();
+      getThreadsRequest->chatId = m_CurrentChat.second;
+      getThreadsRequest->nextPage = true;
+      SendProtocolRequest(m_CurrentChat.first, getThreadsRequest);
+    }
+
+    SelectThread(targetIndex);
     return;
   }
 
@@ -2835,6 +2862,8 @@ void UiModel::Impl::MessageHandler(std::shared_ptr<ServiceMessage> p_ServiceMess
         // snapshot means the chat is not threaded
         const bool wasKnown = (m_ThreadedChats[profileId].count(chatId) > 0);
         m_ThreadedChats[profileId][chatId] = !newThreadsNotify->threads.empty();
+        m_ThreadsHasMore[profileId][chatId] = newThreadsNotify->hasMoreThreads;
+        m_ThreadsPagePending[profileId][chatId] = false;
 
         // reset the selection if the selected thread no longer exists
         const std::string& currentThreadId = m_CurrentThread[profileId][chatId];
@@ -3727,6 +3756,15 @@ int UiModel::Impl::GetCurrentThreadIndex(const std::string& p_ProfileId, const s
 std::string UiModel::Impl::GetCurrentThread(const std::string& p_ProfileId, const std::string& p_ChatId)
 {
   return GetThreadFilter(p_ProfileId, p_ChatId);
+}
+
+bool UiModel::Impl::GetThreadCreationForbidden(const std::string& p_ProfileId, const std::string& p_ChatId)
+{
+  auto chatIt = m_ThreadCreationForbidden.find(p_ProfileId);
+  if (chatIt == m_ThreadCreationForbidden.end()) return false;
+
+  auto it = chatIt->second.find(p_ChatId);
+  return ((it != chatIt->second.end()) && it->second);
 }
 
 bool UiModel::Impl::GetThreadsFocus()
@@ -5675,6 +5713,12 @@ bool UiModel::IsThreadedChatLocked(const std::string& p_ProfileId, const std::st
 {
   nc_assert(m_ModelMutex.owns_lock());
   return GetImpl().IsThreadedChat(p_ProfileId, p_ChatId);
+}
+
+bool UiModel::GetThreadCreationForbiddenLocked(const std::string& p_ProfileId, const std::string& p_ChatId)
+{
+  nc_assert(m_ModelMutex.owns_lock());
+  return GetImpl().GetThreadCreationForbidden(p_ProfileId, p_ChatId);
 }
 
 std::string UiModel::GetContactListNameLocked(const std::string& p_ProfileId, const std::string& p_ChatId,

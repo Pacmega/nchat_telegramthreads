@@ -514,6 +514,7 @@ class GetThreadsRequest : public RequestMessage
 public:
   virtual MessageType GetMessageType() const { return GetThreadsRequestType; }
   std::string chatId;
+  bool nextPage = false; // fetch the next page of threads
 };
 
 class CreateThreadRequest : public RequestMessage
@@ -829,6 +830,7 @@ public:
   virtual MessageType GetMessageType() const { return NewThreadsNotifyType; }
   std::string chatId;
   std::vector<ChatThreadInfo> threads; // always a full snapshot
+  bool hasMoreThreads = false; // more threads available via pagination
 };
 
 class NewThreadNotify : public ServiceMessage

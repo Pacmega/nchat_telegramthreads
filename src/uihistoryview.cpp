@@ -433,6 +433,18 @@ void UiHistoryView::Draw()
     firstMessage = false;
   }
 
+  // for threaded bot chats with no thread selected, an empty history is the
+  // "start a new thread" entry point
+  if ((m_HistoryShowCount == 0) && m_Model->IsThreadedChatLocked(currentChat.first, currentChat.second) &&
+      m_Model->GetCurrentThreadLocked(currentChat.first, currentChat.second).empty() &&
+      !m_Model->GetThreadCreationForbiddenLocked(currentChat.first, currentChat.second))
+  {
+    const std::wstring hint = L"Type any message to create a new thread.";
+    const int hintY = std::max(0, m_PaddedH / 2);
+    const int hintX = std::max(0, (m_PaddedW - StrUtil::WStringWidth(hint)) / 2);
+    mvwaddwstr(m_PaddedWin, hintY, hintX, hint.c_str());
+  }
+
   wrefresh(m_PaddedWin);
 }
 
