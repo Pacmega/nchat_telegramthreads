@@ -36,6 +36,7 @@ void UiThreadListDialog::OnSelect()
   if (m_ThreadListItemVec.empty()) return;
 
   m_SelectedThreadItem = m_ThreadListItemVec[m_Index];
+  LOG_TRACE("thread dialog select index %d id %s", m_Index, m_SelectedThreadItem.topicId.c_str());
   m_Result = true;
   m_Running = false;
 }
