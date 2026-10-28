@@ -239,7 +239,10 @@ private:
                            const std::vector<ChatThreadInfo>& p_NewThreadInfos);
     void SelectThread(int p_Index);
     void SetCurrentThread(const std::string& p_ProfileId, const std::string& p_ChatId, const std::string& p_TopicId);
-    void RebuildFilteredMessageVec(const std::string& p_ProfileId, const std::string& p_ChatId);
+    void BumpThreadActivity(const std::string& p_ProfileId, const std::string& p_ChatId,
+                            const std::string& p_TopicId);
+    void RebuildFilteredMessageVec(const std::string& p_ProfileId, const std::string& p_ChatId,
+                                   const std::string& p_TopicId);
     std::vector<std::string>& GetUnfilteredMessageVec(const std::string& p_ProfileId, const std::string& p_ChatId);
     void Clear(bool p_AllowUndo);
     void SaveEditMessage();

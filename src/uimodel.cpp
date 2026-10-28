@@ -246,6 +246,44 @@ void UiModel::Impl::SelectThread(int p_Index)
   SetCurrentThread(profileId, chatId, threadVec.at(p_Index).id);
 }
 
+void UiModel::Impl::BumpThreadActivity(const std::string& p_ProfileId, const std::string& p_ChatId,
+                                       const std::string& p_TopicId)
+{
+  if (p_TopicId.empty()) return;
+
+  std::vector<ChatThreadInfo>& threadVec = m_ThreadVec[p_ProfileId][p_ChatId];
+  for (size_t i = 1; i < threadVec.size(); ++i) // the General entry stays first
+  {
+    if (threadVec.at(i).id == p_TopicId)
+    {
+      if (i != 1)
+      {
+        // move the thread up to the most recent activity position
+        const ChatThreadInfo threadInfo = threadVec.at(i);
+        threadVec.erase(threadVec.begin() + i);
+        threadVec.insert(threadVec.begin() + 1, threadInfo);
+
+        // keep the selection index pointing at the same thread
+        const std::string& currentThreadId = m_CurrentThread[p_ProfileId][p_ChatId];
+        int& currentThreadIndex = m_CurrentThreadIndex[p_ProfileId][p_ChatId];
+        if (currentThreadId == p_TopicId)
+        {
+          currentThreadIndex = 1;
+        }
+        else if ((currentThreadIndex > 0) && (currentThreadIndex < (int)i))
+        {
+          // threads between the new position and the moved thread shift down
+          ++currentThreadIndex;
+        }
+
+        m_ThreadInfosUpdateTime = TimeUtil::GetCurrentTimeMSec();
+      }
+
+      return;
+    }
+  }
+}
+
 void UiModel::Impl::SelectThreadById(const std::string& p_ProfileId, const std::string& p_ChatId,
                                      const std::string& p_TopicId)
 {
@@ -277,7 +315,7 @@ void UiModel::Impl::SetCurrentThread(const std::string& p_ProfileId, const std::
       m_UnfilteredMessageVec[p_ProfileId][p_ChatId] = std::move(m_MessageVec[p_ProfileId][p_ChatId]);
     }
 
-    RebuildFilteredMessageVec(p_ProfileId, p_ChatId);
+    RebuildFilteredMessageVec(p_ProfileId, p_ChatId, p_TopicId);
   }
   else if (!currentThreadId.empty() && p_TopicId.empty())
   {
@@ -292,7 +330,7 @@ void UiModel::Impl::SetCurrentThread(const std::string& p_ProfileId, const std::
   else
   {
     // switch between threads, the unfiltered message vec remains stashed
-    RebuildFilteredMessageVec(p_ProfileId, p_ChatId);
+    RebuildFilteredMessageVec(p_ProfileId, p_ChatId, p_TopicId);
   }
 
   currentThreadId = p_TopicId;
@@ -320,13 +358,13 @@ void UiModel::Impl::SetCurrentThread(const std::string& p_ProfileId, const std::
   UpdateThreads();
 }
 
-void UiModel::Impl::RebuildFilteredMessageVec(const std::string& p_ProfileId, const std::string& p_ChatId)
+void UiModel::Impl::RebuildFilteredMessageVec(const std::string& p_ProfileId, const std::string& p_ChatId,
+                                              const std::string& p_TopicId)
 {
-  const std::string& topicId = GetThreadFilter(p_ProfileId, p_ChatId);
-  if (topicId.empty()) return;
+  if (p_TopicId.empty()) return;
 
   m_MessageVec[p_ProfileId][p_ChatId] = ThreadUtil::FilterMessageVec(
-    m_UnfilteredMessageVec[p_ProfileId][p_ChatId], m_Messages[p_ProfileId][p_ChatId], topicId);
+    m_UnfilteredMessageVec[p_ProfileId][p_ChatId], m_Messages[p_ProfileId][p_ChatId], p_TopicId);
 }
 
 std::vector<std::string>& UiModel::Impl::GetUnfilteredMessageVec(const std::string& p_ProfileId,
@@ -2071,6 +2109,9 @@ void UiModel::Impl::MessageHandler(std::shared_ptr<ServiceMessage> p_ServiceMess
               messages[chatMessage.id] = chatMessage;
             }
 
+            // activity bumps the thread to the top of the menu
+            BumpThreadActivity(profileId, chatId, chatMessage.topicId);
+
             if (newMessagesNotify->sequence)
             {
               int64_t messageTime = chatMessage.timeSent;
@@ -2105,7 +2146,7 @@ void UiModel::Impl::MessageHandler(std::shared_ptr<ServiceMessage> p_ServiceMess
 
             if (!GetThreadFilter(profileId, chatId).empty())
             {
-              RebuildFilteredMessageVec(profileId, chatId);
+              RebuildFilteredMessageVec(profileId, chatId, GetThreadFilter(profileId, chatId));
             }
 
             if ((profileId == m_CurrentChat.first) && (chatId == m_CurrentChat.second))
@@ -2163,6 +2204,12 @@ void UiModel::Impl::MessageHandler(std::shared_ptr<ServiceMessage> p_ServiceMess
         std::shared_ptr<SendMessageNotify> sendMessageNotify = std::static_pointer_cast<SendMessageNotify>(
           p_ServiceMessage);
         LOG_TRACE(sendMessageNotify->success ? "send ok" : "send failed");
+
+        // activity bumps the thread to the top of the menu
+        if (sendMessageNotify->success)
+        {
+          BumpThreadActivity(profileId, sendMessageNotify->chatId, sendMessageNotify->chatMessage.topicId);
+        }
       }
       break;
 
@@ -2192,7 +2239,7 @@ void UiModel::Impl::MessageHandler(std::shared_ptr<ServiceMessage> p_ServiceMess
 
           if (!GetThreadFilter(profileId, chatId).empty())
           {
-            RebuildFilteredMessageVec(profileId, chatId);
+            RebuildFilteredMessageVec(profileId, chatId, GetThreadFilter(profileId, chatId));
           }
 
           std::vector<std::string>& messageVec = m_MessageVec[profileId][chatId];
