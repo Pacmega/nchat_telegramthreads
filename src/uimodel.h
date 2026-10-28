@@ -119,6 +119,7 @@ private:
     std::unordered_map<std::string, std::unordered_map<std::string, ContactInfo>> GetContactInfos();
     int64_t GetContactInfosUpdateTime();
     int64_t GetGroupMembersUpdateTime();
+    int64_t GetThreadInfosUpdateTime();
     std::pair<std::string, std::string>& GetCurrentChat();
     bool IsCurrentChat(const std::string& p_ProfileId, const std::string& p_ChatId);
     int& GetCurrentChatIndex();
@@ -272,6 +273,7 @@ private:
     int64_t m_LastSyncMessageTime = 0;
 
     std::unordered_map<std::string, std::unordered_map<std::string, std::map<std::string, ChatThreadInfo>>> m_ThreadInfos;
+    int64_t m_ThreadInfosUpdateTime = 0;
     std::unordered_map<std::string, std::unordered_map<std::string, std::vector<ChatThreadInfo>>> m_ThreadVec;
     std::unordered_map<std::string, std::unordered_map<std::string, bool>> m_ThreadedChats; // present = state known
     std::unordered_map<std::string, std::unordered_map<std::string, std::string>> m_CurrentThread;
@@ -363,6 +365,7 @@ public:
 
   int64_t GetContactInfosUpdateTime();
   int64_t GetGroupMembersUpdateTime();
+  int64_t GetThreadInfosUpdateTime();
   void RequestGroupMembers(const std::string& p_ProfileId, const std::string& p_ChatId);
   std::vector<std::string> GetGroupMembers(const std::string& p_ProfileId, const std::string& p_ChatId);
   bool GetEmojiEnabled();

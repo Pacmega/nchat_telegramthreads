@@ -46,19 +46,39 @@ void UiThreadListDialog::OnBack()
 
 bool UiThreadListDialog::OnTimer()
 {
-  return false; // no update
+  // thread snapshots can arrive while the dialog is open (topic updates,
+  // renames, creations); keep the list in sync with the model
+  if (m_ThreadInfosUpdateTime != m_Model->GetThreadInfosUpdateTime())
+  {
+    UpdateList();
+    return true;
+  }
+
+  return false;
 }
 
 void UiThreadListDialog::UpdateList()
 {
   const bool emojiEnabled = m_Model->GetEmojiEnabled();
 
+  if (m_ThreadInfosUpdateTime != m_Model->GetThreadInfosUpdateTime())
+  {
+    m_ThreadInfosUpdateTime = m_Model->GetThreadInfosUpdateTime();
+    m_ThreadVec = m_Model->GetThreadVec(m_ProfileId, m_ChatId);
+  }
+
+  // preserve the cursor position across list updates
+  UiThreadListItem currentItem;
+  if (m_Index < (int)m_ThreadListItemVec.size())
+  {
+    currentItem = m_ThreadListItemVec[m_Index];
+  }
+
   m_Index = 0;
   m_Items.clear();
   m_ThreadListItemVec.clear();
 
-  const std::vector<ChatThreadInfo> threadVec = m_Model->GetThreadVec(m_ProfileId, m_ChatId);
-  for (const ChatThreadInfo& threadInfo : threadVec)
+  for (const ChatThreadInfo& threadInfo : m_ThreadVec)
   {
     std::string name = threadInfo.name;
     if (name.empty())
@@ -95,6 +115,19 @@ void UiThreadListDialog::UpdateList()
 
       m_Items.push_back(StrUtil::TrimPadWString(StrUtil::ToWString(displayName), m_W));
       m_ThreadListItemVec.push_back(threadListItem);
+    }
+  }
+
+  // restore the cursor on the previously highlighted item
+  if (!currentItem.topicId.empty() || !currentItem.name.empty())
+  {
+    for (size_t i = 0; i < m_ThreadListItemVec.size(); ++i)
+    {
+      if (m_ThreadListItemVec.at(i).topicId == currentItem.topicId)
+      {
+        m_Index = (int)i;
+        break;
+      }
     }
   }
 }

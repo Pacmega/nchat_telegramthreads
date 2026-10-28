@@ -259,6 +259,8 @@ void UiModel::Impl::SelectThreadById(const std::string& p_ProfileId, const std::
       return;
     }
   }
+
+  LOG_TRACE("select thread id %s not found, ignoring", p_TopicId.c_str());
 }
 
 void UiModel::Impl::SetCurrentThread(const std::string& p_ProfileId, const std::string& p_ChatId,
@@ -364,6 +366,23 @@ void UiModel::Impl::UpdateThreadInfos(const std::string& p_ProfileId, const std:
 
   // the menu vec is the General entry followed by the notified topics
   m_ThreadVec[p_ProfileId][p_ChatId] = ThreadUtil::BuildThreadInfos(p_NewThreadInfos);
+
+  // the snapshot may reorder topics; keep the selection index pointing at the
+  // selected thread's current position
+  const std::string& currentThreadId = m_CurrentThread[p_ProfileId][p_ChatId];
+  int& currentThreadIndex = m_CurrentThreadIndex[p_ProfileId][p_ChatId];
+  currentThreadIndex = 0;
+  const std::vector<ChatThreadInfo>& threadVec = m_ThreadVec[p_ProfileId][p_ChatId];
+  for (size_t i = 0; i < threadVec.size(); ++i)
+  {
+    if (threadVec.at(i).id == currentThreadId)
+    {
+      currentThreadIndex = (int)i;
+      break;
+    }
+  }
+
+  m_ThreadInfosUpdateTime = TimeUtil::GetCurrentTimeMSec();
 }
 
 void UiModel::Impl::OnKeyToggleTop()
@@ -2761,6 +2780,7 @@ void UiModel::Impl::MessageHandler(std::shared_ptr<ServiceMessage> p_ServiceMess
           std::vector<ChatThreadInfo>& threadVec = m_ThreadVec[profileId][chatId];
           const size_t insertIndex = threadVec.empty() ? threadVec.size() : std::min(threadVec.size(), (size_t)1);
           threadVec.insert(threadVec.begin() + insertIndex, newThreadNotify->thread);
+          m_ThreadInfosUpdateTime = TimeUtil::GetCurrentTimeMSec();
 
           // select the new thread, flushing any message queued for it
           SelectThreadById(profileId, chatId, newThreadNotify->thread.id);
@@ -3562,6 +3582,11 @@ int64_t UiModel::Impl::GetContactInfosUpdateTime()
 int64_t UiModel::Impl::GetGroupMembersUpdateTime()
 {
   return m_GroupMembersUpdateTime;
+}
+
+int64_t UiModel::Impl::GetThreadInfosUpdateTime()
+{
+  return m_ThreadInfosUpdateTime;
 }
 
 std::pair<std::string, std::string>& UiModel::Impl::GetCurrentChat()
@@ -5421,6 +5446,12 @@ int64_t UiModel::GetGroupMembersUpdateTime()
 {
   std::unique_lock<owned_mutex> lock(m_ModelMutex);
   return GetImpl().GetGroupMembersUpdateTime();
+}
+
+int64_t UiModel::GetThreadInfosUpdateTime()
+{
+  std::unique_lock<owned_mutex> lock(m_ModelMutex);
+  return GetImpl().GetThreadInfosUpdateTime();
 }
 
 void UiModel::RequestGroupMembers(const std::string& p_ProfileId, const std::string& p_ChatId)

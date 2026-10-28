@@ -37,6 +37,8 @@ protected:
 private:
   std::string m_ProfileId;
   std::string m_ChatId;
+  std::vector<ChatThreadInfo> m_ThreadVec;
+  int64_t m_ThreadInfosUpdateTime = 0;
   std::vector<UiThreadListItem> m_ThreadListItemVec;
   UiThreadListItem m_SelectedThreadItem;
 };
