@@ -34,6 +34,7 @@ enum ProtocolFeature
   FeatureArchiveChat = (1 << 8),
   FeaturePinMessage = (1 << 9),
   FeaturePresenceRequiresOnline = (1 << 10),
+  FeatureThreads = (1 << 11),
 };
 
 class Protocol
@@ -99,7 +100,8 @@ enum MessageType
   ReinitRequestType,
   FindMessageRequestType,
   GetGroupMembersRequestType,
-  // Service messages
+  GetThreadsRequestType,
+  CreateThreadRequestType,
   ServiceMessageType,
   NewContactsNotifyType,
   NewChatsNotifyType,
@@ -127,6 +129,8 @@ enum MessageType
   NewGroupMembersNotifyType,
   UpdateArchivedNotifyType,
   MoveChatNotifyType,
+  NewThreadsNotifyType,
+  NewThreadNotifyType,
 };
 
 struct ContactInfo
@@ -147,6 +151,44 @@ struct ChatInfo
   bool isPinned = false;
   bool isArchived = false;
   int64_t lastMessageTime = -1;
+};
+
+struct ChatThreadInfo
+{
+  std::string id; // hex-encoded forum topic id
+  std::string name;
+  int32_t unreadCount = 0;
+  int32_t unreadMentionCount = 0;
+  bool isGeneral = false;
+  bool isClosed = false;
+  bool isHidden = false;
+  int64_t lastMessageTime = -1;
+
+  bool operator==(const ChatThreadInfo& p_Other) const
+  {
+    if (id != p_Other.id) return false;
+
+    if (name != p_Other.name) return false;
+
+    if (unreadCount != p_Other.unreadCount) return false;
+
+    if (unreadMentionCount != p_Other.unreadMentionCount) return false;
+
+    if (isGeneral != p_Other.isGeneral) return false;
+
+    if (isClosed != p_Other.isClosed) return false;
+
+    if (isHidden != p_Other.isHidden) return false;
+
+    if (lastMessageTime != p_Other.lastMessageTime) return false;
+
+    return true;
+  }
+
+  bool operator!=(const ChatThreadInfo& p_Other) const
+  {
+    return !(*this == p_Other);
+  }
 };
 
 enum FileStatus
@@ -210,6 +252,7 @@ struct ChatMessage
   bool isDeleted = false;
   bool isPinned = false;
   bool hasMention = false; // only required for tgchat, not db cached
+  std::string topicId; // hex-encoded forum topic id, only required for tgchat, db cached
 };
 
 enum DownloadFileAction
@@ -263,6 +306,7 @@ public:
   std::string chatId;
   std::string fromMsgId;
   int32_t limit;
+  std::string topicId; // hex-encoded forum topic id, empty = whole chat
 };
 
 class SendMessageRequest : public RequestMessage
@@ -462,6 +506,21 @@ class GetGroupMembersRequest : public RequestMessage
 public:
   virtual MessageType GetMessageType() const { return GetGroupMembersRequestType; }
   std::string chatId;
+};
+
+class GetThreadsRequest : public RequestMessage
+{
+public:
+  virtual MessageType GetMessageType() const { return GetThreadsRequestType; }
+  std::string chatId;
+};
+
+class CreateThreadRequest : public RequestMessage
+{
+public:
+  virtual MessageType GetMessageType() const { return CreateThreadRequestType; }
+  std::string chatId;
+  std::string name;
 };
 
 // Service messages
@@ -759,4 +818,25 @@ public:
   bool success = false;
   std::string chatId;
   bool isArchived = false;
+};
+
+class NewThreadsNotify : public ServiceMessage
+{
+public:
+  explicit NewThreadsNotify(const std::string& p_ProfileId)
+    : ServiceMessage(p_ProfileId) { }
+  virtual MessageType GetMessageType() const { return NewThreadsNotifyType; }
+  std::string chatId;
+  std::vector<ChatThreadInfo> threads; // always a full snapshot
+};
+
+class NewThreadNotify : public ServiceMessage
+{
+public:
+  explicit NewThreadNotify(const std::string& p_ProfileId)
+    : ServiceMessage(p_ProfileId) { }
+  virtual MessageType GetMessageType() const { return NewThreadNotifyType; }
+  std::string chatId;
+  ChatThreadInfo thread;
+  bool success = false;
 };
