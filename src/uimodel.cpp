@@ -350,12 +350,7 @@ void UiModel::Impl::SetCurrentThread(const std::string& p_ProfileId, const std::
                                      const std::string& p_TopicId)
 {
   std::string& currentThreadId = m_CurrentThread[p_ProfileId][p_ChatId];
-  if (currentThreadId == p_TopicId)
-  {
-    // re-selecting the current thread still raises it to the top of the menu
-    BumpThreadActivity(p_ProfileId, p_ChatId, p_TopicId);
-    return;
-  }
+  if (currentThreadId == p_TopicId) return;
 
   if (currentThreadId.empty() && !p_TopicId.empty())
   {
@@ -405,8 +400,6 @@ void UiModel::Impl::SetCurrentThread(const std::string& p_ProfileId, const std::
     RequestMessagesCurrentChat();
   }
 
-  // selecting a thread consistently raises it to the top of the menu
-  BumpThreadActivity(p_ProfileId, p_ChatId, p_TopicId);
   UpdateThreads();
 }
 
