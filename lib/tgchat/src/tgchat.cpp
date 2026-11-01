@@ -229,6 +229,8 @@ private:
   void SetChatThreaded(int64_t p_ChatId, bool p_IsThreaded);
   void SendThreadsNotify(int64_t p_ChatId, bool p_HasMore);
   bool GetThreadSnapshotUnread(int64_t p_ChatId, bool& p_IsUnread, bool& p_IsUnreadMention);
+  void RestorePersistedThreadedChats();
+  void PersistThreadedChats();
   void HandleUpdateForumTopicInfo(td::td_api::object_ptr<td::td_api::forumTopicInfo>&& p_Info);
   void HandleUpdateForumTopic(int64_t p_ChatId, int32_t p_ForumTopicId, int32_t p_UnreadMentionCount);
   td::td_api::object_ptr<td::td_api::formattedText> GetFormattedText(const std::string& p_Text);
@@ -272,6 +274,7 @@ private:
   std::map<int64_t, std::map<int32_t, ForumTopicData>> m_ForumTopics; // topic snapshot per chat
   std::map<int64_t, ForumTopicsNextOffset> m_ForumTopicsNextOffsets; // pagination offsets per chat
   std::map<int64_t, bool> m_ForumTopicsPaged; // chat has topics from beyond the first page
+  std::map<int64_t, bool> m_PersistedThreadedChats; // chat id -> last snapshot-derived unread state (persists across sessions)
   int64_t m_CurrentChat = 0;
   const char m_SponsoredMessageMsgIdPrefix = '+';
   std::map<std::string, std::set<std::string>> m_SponsoredMessageIds;
@@ -748,6 +751,14 @@ void TgChat::Impl::PerformRequest(std::shared_ptr<RequestMessage> p_RequestMessa
 
             if (isGetTypeOnly) return;
 
+            // proactively refresh the thread snapshot of chats known threaded
+            // from a previous session, so that the unread state is corrected
+            // at startup without requiring the chat to be opened
+            if (m_PersistedThreadedChats.count(tchat->id_) > 0)
+            {
+              DetectThreadedChat(tchat->id_);
+            }
+
             ChatInfo chatInfo;
             chatInfo.id = StrUtil::NumToHex(tchat->id_);
             chatInfo.isUnread = (tchat->unread_count_ > 0);
@@ -755,14 +766,24 @@ void TgChat::Impl::PerformRequest(std::shared_ptr<RequestMessage> p_RequestMessa
 
             // for threaded chats prefer the thread snapshot unread state over
             // the chat-level counters, which never clear as topic reads bypass
-            // the dialog read state; until a snapshot is available the chat
-            // level state is the best guess
+            // the dialog read state; until a snapshot is available, the state
+            // persisted by previous sessions is used, with the chat level
+            // counters as the last resort
             bool isUnread = false;
             bool isUnreadMention = false;
             if (GetThreadSnapshotUnread(tchat->id_, isUnread, isUnreadMention))
             {
               chatInfo.isUnread = isUnread;
               chatInfo.isUnreadMention = isUnreadMention;
+            }
+            else
+            {
+              std::lock_guard<std::mutex> lock(m_Mutex);
+              auto persistedIt = m_PersistedThreadedChats.find(tchat->id_);
+              if (persistedIt != m_PersistedThreadedChats.end())
+              {
+                chatInfo.isUnread = persistedIt->second;
+              }
             }
 
             chatInfo.isMuted = (tchat->notification_settings_->mute_for_ > 0);
@@ -1970,9 +1991,13 @@ void TgChat::Impl::InitConfig()
     { "local_key", "" },
     { "markdown_enabled", "1" },
     { "markdown_version", "1" },
+    { "threaded_chats", "" },
+    { "threaded_unread_chats", "" },
   };
   const std::string configPath(m_ProfileDir + std::string("/telegram.conf"));
   m_Config = Config(configPath, defaultConfig);
+
+  RestorePersistedThreadedChats();
 }
 
 void TgChat::Impl::Cleanup()
@@ -1983,6 +2008,7 @@ void TgChat::Impl::Cleanup()
 
 void TgChat::Impl::CleanupConfig()
 {
+  PersistThreadedChats();
   m_Config.Save();
 }
 
@@ -4258,6 +4284,10 @@ void TgChat::Impl::DetectThreadedChat(int64_t p_ChatId)
     // detection); its thread list is fetched once, on first detection
     m_ThreadedKnown[p_ChatId] = true;
     m_ThreadedChats[p_ChatId] = true;
+
+    // remember the chat across sessions, so that its thread snapshot is
+    // proactively fetched at the next startup
+    m_PersistedThreadedChats.emplace(p_ChatId, false);
   }
 
   std::shared_ptr<GetThreadsRequest> getThreadsRequest = std::make_shared<GetThreadsRequest>();
@@ -4392,6 +4422,14 @@ void TgChat::Impl::SetChatThreaded(int64_t p_ChatId, bool p_IsThreaded)
   std::lock_guard<std::mutex> lock(m_Mutex);
   m_ThreadedKnown[p_ChatId] = true;
   m_ThreadedChats[p_ChatId] = p_IsThreaded;
+
+  if (p_IsThreaded)
+  {
+    // remember the chat across sessions, so that its thread snapshot is
+    // proactively fetched at the next startup; any previously persisted
+    // unread state is kept until a fresh snapshot updates it
+    m_PersistedThreadedChats.emplace(p_ChatId, false);
+  }
 }
 
 void TgChat::Impl::SendThreadsNotify(int64_t p_ChatId, bool p_HasMore)
@@ -4403,6 +4441,22 @@ void TgChat::Impl::SendThreadsNotify(int64_t p_ChatId, bool p_HasMore)
     if (topicsIt != m_ForumTopics.end())
     {
       threads = TgTopic::ThreadInfosFromForumTopics(topicsIt->second);
+    }
+
+    // update the persisted snapshot-derived unread state, so that the chat
+    // list badge is correct at the next startup
+    if (!threads.empty())
+    {
+      auto threadedIt = m_ThreadedChats.find(p_ChatId);
+      if ((threadedIt != m_ThreadedChats.end()) && threadedIt->second)
+      {
+        bool isUnread = false;
+        for (const ChatThreadInfo& thread : threads)
+        {
+          isUnread = isUnread || (thread.unreadCount > 0) || (thread.unreadMentionCount > 0);
+        }
+        m_PersistedThreadedChats[p_ChatId] = isUnread;
+      }
     }
   }
 
@@ -4444,6 +4498,46 @@ bool TgChat::Impl::GetThreadSnapshotUnread(int64_t p_ChatId, bool& p_IsUnread, b
   }
 
   return true;
+}
+
+void TgChat::Impl::RestorePersistedThreadedChats()
+{
+  // called from InitConfig, before any worker thread is started
+  const std::vector<std::string> threadedIds = StrUtil::Split(m_Config.Get("threaded_chats"), ',');
+  for (const std::string& threadedId : threadedIds)
+  {
+    if (threadedId.empty()) continue;
+
+    m_PersistedThreadedChats[StrUtil::NumFromHex<int64_t>(threadedId)] = false;
+  }
+
+  const std::vector<std::string> unreadIds = StrUtil::Split(m_Config.Get("threaded_unread_chats"), ',');
+  for (const std::string& unreadId : unreadIds)
+  {
+    if (unreadId.empty()) continue;
+
+    m_PersistedThreadedChats[StrUtil::NumFromHex<int64_t>(unreadId)] = true;
+  }
+}
+
+void TgChat::Impl::PersistThreadedChats()
+{
+  std::lock_guard<std::mutex> lock(m_Mutex);
+
+  std::vector<std::string> threadedIds;
+  std::vector<std::string> unreadIds;
+  for (const auto& persistedIt : m_PersistedThreadedChats)
+  {
+    const std::string chatIdStr = StrUtil::NumToHex(persistedIt.first);
+    threadedIds.push_back(chatIdStr);
+    if (persistedIt.second)
+    {
+      unreadIds.push_back(chatIdStr);
+    }
+  }
+
+  m_Config.Set("threaded_chats", StrUtil::Join(threadedIds, ","));
+  m_Config.Set("threaded_unread_chats", StrUtil::Join(unreadIds, ","));
 }
 
 void TgChat::Impl::HandleUpdateForumTopicInfo(td::td_api::object_ptr<td::td_api::forumTopicInfo>&& p_Info)
