@@ -228,6 +228,7 @@ private:
   void FetchForumTopics(int64_t p_ChatId, bool p_IsProbe, bool p_NextPage);
   void SetChatThreaded(int64_t p_ChatId, bool p_IsThreaded);
   void SendThreadsNotify(int64_t p_ChatId, bool p_HasMore);
+  bool GetThreadSnapshotUnread(int64_t p_ChatId, bool& p_IsUnread, bool& p_IsUnreadMention);
   void HandleUpdateForumTopicInfo(td::td_api::object_ptr<td::td_api::forumTopicInfo>&& p_Info);
   void HandleUpdateForumTopic(int64_t p_ChatId, int32_t p_ForumTopicId, int32_t p_UnreadMentionCount);
   td::td_api::object_ptr<td::td_api::formattedText> GetFormattedText(const std::string& p_Text);
@@ -751,6 +752,19 @@ void TgChat::Impl::PerformRequest(std::shared_ptr<RequestMessage> p_RequestMessa
             chatInfo.id = StrUtil::NumToHex(tchat->id_);
             chatInfo.isUnread = (tchat->unread_count_ > 0);
             chatInfo.isUnreadMention = (tchat->unread_mention_count_ > 0);
+
+            // for threaded chats prefer the thread snapshot unread state over
+            // the chat-level counters, which never clear as topic reads bypass
+            // the dialog read state; until a snapshot is available the chat
+            // level state is the best guess
+            bool isUnread = false;
+            bool isUnreadMention = false;
+            if (GetThreadSnapshotUnread(tchat->id_, isUnread, isUnreadMention))
+            {
+              chatInfo.isUnread = isUnread;
+              chatInfo.isUnreadMention = isUnreadMention;
+            }
+
             chatInfo.isMuted = (tchat->notification_settings_->mute_for_ > 0);
             int64_t lastMessageTimeSec =
               (tchat->last_message_ != nullptr) ? tchat->last_message_->date_ : 0;
@@ -4406,6 +4420,30 @@ void TgChat::Impl::SendThreadsNotify(int64_t p_ChatId, bool p_HasMore)
   newThreadsNotify->threads = std::move(threads);
   newThreadsNotify->hasMoreThreads = p_HasMore;
   CallMessageHandler(newThreadsNotify);
+}
+
+bool TgChat::Impl::GetThreadSnapshotUnread(int64_t p_ChatId, bool& p_IsUnread, bool& p_IsUnreadMention)
+{
+  std::lock_guard<std::mutex> lock(m_Mutex);
+
+  const auto threadedIt = m_ThreadedChats.find(p_ChatId);
+  if ((threadedIt == m_ThreadedChats.end()) || !threadedIt->second) return false;
+
+  const auto topicsIt = m_ForumTopics.find(p_ChatId);
+  if ((topicsIt == m_ForumTopics.end()) || topicsIt->second.empty()) return false;
+
+  // the chat-level unread counters are not topic aware and never clear for
+  // threaded chats, as topic reads bypass the dialog read state; the topic
+  // unread counters are the authoritative unread state for such chats
+  p_IsUnread = false;
+  p_IsUnreadMention = false;
+  for (const auto& topicPair : topicsIt->second)
+  {
+    p_IsUnread = p_IsUnread || (topicPair.second.info.unreadCount > 0);
+    p_IsUnreadMention = p_IsUnreadMention || (topicPair.second.info.unreadMentionCount > 0);
+  }
+
+  return true;
 }
 
 void TgChat::Impl::HandleUpdateForumTopicInfo(td::td_api::object_ptr<td::td_api::forumTopicInfo>&& p_Info)

@@ -2851,6 +2851,30 @@ void UiModel::Impl::MessageHandler(std::shared_ptr<ServiceMessage> p_ServiceMess
 
         UpdateThreadInfos(profileId, chatId, newThreadsNotify->threads);
 
+        // for threaded chats derive the chat unread state from the thread
+        // snapshot; the protocol chat unread state is not topic aware and
+        // never clears for threaded chats, as topic reads bypass the dialog
+        // read state
+        if (!newThreadsNotify->threads.empty())
+        {
+          bool isUnread = false;
+          bool isUnreadMention = false;
+          for (const ChatThreadInfo& threadInfo : newThreadsNotify->threads)
+          {
+            isUnread = isUnread || (threadInfo.unreadCount > 0);
+            isUnreadMention = isUnreadMention || (threadInfo.unreadMentionCount > 0);
+          }
+
+          std::unordered_map<std::string, ChatInfo>& chatInfos = m_ChatInfos[profileId];
+          auto chatInfoIt = chatInfos.find(chatId);
+          if (chatInfoIt != chatInfos.end())
+          {
+            chatInfoIt->second.isUnread = isUnread;
+            chatInfoIt->second.isUnreadMention = isUnreadMention;
+            UpdateList();
+          }
+        }
+
         // the snapshot resolves the threadedness probe for this chat; an empty
         // snapshot means the chat is not threaded
         const bool wasKnown = (m_ThreadedChats[profileId].count(chatId) > 0);
