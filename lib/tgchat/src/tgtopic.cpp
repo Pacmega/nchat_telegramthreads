@@ -73,8 +73,7 @@ std::map<int32_t, ForumTopicData> TgTopic::ForumTopicsFromTd(const td::td_api::f
   return forumTopics;
 }
 
-std::vector<ChatThreadInfo> TgTopic::ThreadInfosFromForumTopics(
-  const std::map<int32_t, ForumTopicData>& p_ForumTopics)
+std::vector<ChatThreadInfo> TgTopic::ThreadInfosFromForumTopics(const std::map<int32_t, ForumTopicData>& p_ForumTopics)
 {
   std::vector<std::pair<int32_t, ForumTopicData>> topics(p_ForumTopics.begin(), p_ForumTopics.end());
 

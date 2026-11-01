@@ -210,20 +210,20 @@ int AppUtil::GetTerminateSignal()
 // interrupted register state in the signal ucontext_t (or the current frame for
 // the non-signal, assertion path):
 //
-//   1. A precise frame-record walk down the frame-pointer chain. Exact and
-//      ordered, but only where a frame pointer is maintained -- nchat's own code
-//      is built -fno-omit-frame-pointer (CMakeLists.txt), the static deps
-//      (OpenSSL, ...) and musl itself are not. When an async signal lands in that
-//      frame-pointer-less code (or in a thread's entry frame, fp=0), the chain
-//      breaks at the first hop and the walk yields only the faulting pc -- this is
-//      why an x86_64 crash during setup logged a single address.
-//   2. A fallback raw-stack scan, used when the frame-pointer walk barely advanced
-//      (< kMinFpFrames). Every call pushes a return address regardless of frame
-//      pointers, so scanning the thread's stack for words that point into nchat's
-//      own text recovers the chain across frame-pointer-less frames. It is
-//      heuristic -- stale return addresses left on the stack can show as extra or
-//      out-of-order frames -- so it is only a fallback, never used when the precise
-//      walk succeeds.
+// 1. A precise frame-record walk down the frame-pointer chain. Exact and
+// ordered, but only where a frame pointer is maintained -- nchat's own code
+// is built -fno-omit-frame-pointer (CMakeLists.txt), the static deps
+// (OpenSSL, ...) and musl itself are not. When an async signal lands in that
+// frame-pointer-less code (or in a thread's entry frame, fp=0), the chain
+// breaks at the first hop and the walk yields only the faulting pc -- this is
+// why an x86_64 crash during setup logged a single address.
+// 2. A fallback raw-stack scan, used when the frame-pointer walk barely advanced
+// (< kMinFpFrames). Every call pushes a return address regardless of frame
+// pointers, so scanning the thread's stack for words that point into nchat's
+// own text recovers the chain across frame-pointer-less frames. It is
+// heuristic -- stale return addresses left on the stack can show as extra or
+// out-of-order frames -- so it is only a fallback, never used when the precise
+// walk succeeds.
 //
 // Both tiers filter return addresses to nchat's own text range
 // [__executable_start, _etext); with the musl binary linked -no-pie that range is
@@ -270,7 +270,10 @@ static uintptr_t StackRegionEnd(uintptr_t p_Sp)
       uintptr_t lo = 0;
       uintptr_t hi = 0;
       const char* q = line;
-      while (*q == ' ') ++q;
+      while (*q == ' ')
+      {
+        ++q;
+      }
       while (((*q >= '0') && (*q <= '9')) || ((*q >= 'a') && (*q <= 'f')))
       {
         lo = (lo << 4) + ((*q <= '9') ? (uintptr_t)(*q - '0') : (uintptr_t)(*q - 'a' + 10));

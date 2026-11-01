@@ -52,7 +52,7 @@ static void TestBuildThreadInfos()
   unittest::ExpectEqual(std::string, forumThreads.at(1).id, "35");
 
   // an empty snapshot still produces the General entry
-  const std::vector<ChatThreadInfo> emptyThreads = ThreadUtil::BuildThreadInfos({});
+  const std::vector<ChatThreadInfo> emptyThreads = ThreadUtil::BuildThreadInfos({ });
   unittest::ExpectEqual(size_t, emptyThreads.size(), 1);
   unittest::ExpectTrue(emptyThreads.at(0).isGeneral);
   unittest::ExpectEqual(std::string, emptyThreads.at(0).id, "");

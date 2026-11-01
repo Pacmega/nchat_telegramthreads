@@ -50,6 +50,5 @@ public:
 
   // Ordered thread infos (General first, then by topic order) from a topic
   // snapshot
-  static std::vector<ChatThreadInfo> ThreadInfosFromForumTopics(
-    const std::map<int32_t, ForumTopicData>& p_ForumTopics);
+  static std::vector<ChatThreadInfo> ThreadInfosFromForumTopics(const std::map<int32_t, ForumTopicData>& p_ForumTopics);
 };

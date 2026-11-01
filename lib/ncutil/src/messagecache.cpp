@@ -1331,7 +1331,8 @@ void MessageCache::PerformRequest(std::shared_ptr<Request> p_Request)
                 "(chatId, id, senderId, text, quotedId, quotedText, quotedSender, fileInfo, timeSent, isOutgoing, isRead, isEdited, isDeleted, isPinned, topicId, reactions) VALUES "
                 "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);" <<
                 chatId << msg.id << msg.senderId << msg.text << msg.quotedId << msg.quotedText << msg.quotedSender <<
-                msg.fileInfo << msg.timeSent << msg.isOutgoing << msg.isRead << msg.isEdited << msg.isDeleted << msg.isPinned << msg.topicId << reactionsBytes;
+                msg.fileInfo << msg.timeSent << msg.isOutgoing << msg.isRead << msg.isEdited << msg.isDeleted <<
+            msg.isPinned << msg.topicId << reactionsBytes;
             }
             catch (const sqlite::sqlite_exception& ex)
             {
@@ -1356,7 +1357,8 @@ void MessageCache::PerformRequest(std::shared_ptr<Request> p_Request)
                 "(chatId, id, senderId, text, quotedId, quotedText, quotedSender, fileInfo, timeSent, isOutgoing, isRead, isEdited, isDeleted, isPinned, topicId, reactions) VALUES "
                 "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);" <<
                 chatId << msg.id << msg.senderId << msg.text << msg.quotedId << msg.quotedText << msg.quotedSender <<
-                msg.fileInfo << msg.timeSent << msg.isOutgoing << msg.isRead << msg.isEdited << msg.isDeleted << msg.isPinned << msg.topicId << reactionsBytes;
+                msg.fileInfo << msg.timeSent << msg.isOutgoing << msg.isRead << msg.isEdited << msg.isDeleted <<
+            msg.isPinned << msg.topicId << reactionsBytes;
             }
             catch (const sqlite::sqlite_exception& ex)
             {
