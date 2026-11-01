@@ -288,6 +288,39 @@ void UiModel::Impl::BumpThreadActivity(const std::string& p_ProfileId, const std
   SortThreadVec(p_ProfileId, p_ChatId);
 }
 
+void UiModel::Impl::UpdateThreadActivity(const std::string& p_ProfileId, const std::string& p_ChatId,
+                                         const std::vector<ChatMessage>& p_ChatMessages)
+{
+  // the newest message time per topic within the batch, as batch order is
+  // unspecified
+  std::unordered_map<std::string, int64_t> batchNewestMsgTimes;
+  for (const ChatMessage& chatMessage : p_ChatMessages)
+  {
+    if (chatMessage.topicId.empty()) continue;
+    int64_t& batchNewestMsgTime = batchNewestMsgTimes[chatMessage.topicId];
+    batchNewestMsgTime = std::max(batchNewestMsgTime, chatMessage.timeSent);
+  }
+
+  std::unordered_map<std::string, int64_t>& newestMsgTimes = m_ThreadNewestMsgTimes[p_ProfileId][p_ChatId];
+  for (const auto& topicNewestMsgTime : batchNewestMsgTimes)
+  {
+    auto newestMsgTimeIt = newestMsgTimes.find(topicNewestMsgTime.first);
+    if (newestMsgTimeIt == newestMsgTimes.end())
+    {
+      // the first known messages of a thread only establish the activity
+      // baseline; fetching them is not activity in itself
+      newestMsgTimes.emplace(topicNewestMsgTime.first, topicNewestMsgTime.second);
+    }
+    else if (topicNewestMsgTime.second > newestMsgTimeIt->second)
+    {
+      // a message newer than everything previously known in the thread is
+      // activity, bumping the thread to the top of the menu
+      newestMsgTimeIt->second = topicNewestMsgTime.second;
+      BumpThreadActivity(p_ProfileId, p_ChatId, topicNewestMsgTime.first);
+    }
+  }
+}
+
 void UiModel::Impl::SortThreadVec(const std::string& p_ProfileId, const std::string& p_ChatId)
 {
   std::vector<ChatThreadInfo>& threadVec = m_ThreadVec[p_ProfileId][p_ChatId];
@@ -2156,6 +2189,11 @@ void UiModel::Impl::MessageHandler(std::shared_ptr<ServiceMessage> p_ServiceMess
           std::string& oldestMessageId = m_OldestMessageId[profileId][chatId];
           int64_t& oldestMessageTime = m_OldestMessageTime[profileId][chatId];
 
+          // only messages newer than everything previously known in a thread
+          // count as activity and bump it to the top of the menu; fetched
+          // history and re-delivered messages do not
+          UpdateThreadActivity(profileId, chatId, chatMessages);
+
           for (auto& chatMessage : chatMessages)
           {
             hasNewMessage = true;
@@ -2168,8 +2206,6 @@ void UiModel::Impl::MessageHandler(std::shared_ptr<ServiceMessage> p_ServiceMess
               messages[chatMessage.id] = chatMessage;
             }
 
-            // activity bumps the thread to the top of the menu
-            BumpThreadActivity(profileId, chatId, chatMessage.topicId);
             if (!chatMessage.topicId.empty())
             {
               // schedule a thread snapshot refresh so new unread badges appear

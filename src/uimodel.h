@@ -242,6 +242,8 @@ private:
     void SetCurrentThread(const std::string& p_ProfileId, const std::string& p_ChatId, const std::string& p_TopicId);
     void BumpThreadActivity(const std::string& p_ProfileId, const std::string& p_ChatId,
                             const std::string& p_TopicId);
+    void UpdateThreadActivity(const std::string& p_ProfileId, const std::string& p_ChatId,
+                              const std::vector<ChatMessage>& p_ChatMessages);
     void SortThreadVec(const std::string& p_ProfileId, const std::string& p_ChatId);
     void ScheduleThreadsRefresh(const std::string& p_ProfileId, const std::string& p_ChatId);
     void RebuildFilteredMessageVec(const std::string& p_ProfileId, const std::string& p_ChatId,
@@ -285,6 +287,9 @@ private:
     std::unordered_map<std::string,
                        std::unordered_map<std::string,
                                           std::unordered_map<std::string, int64_t>>> m_ThreadActivityStamps;
+    std::unordered_map<std::string,
+                       std::unordered_map<std::string,
+                                          std::unordered_map<std::string, int64_t>>> m_ThreadNewestMsgTimes;
     std::unordered_map<std::string, std::unordered_map<std::string, int64_t>> m_ThreadsRefreshAtMs;
     std::unordered_map<std::string, std::unordered_map<std::string, bool>> m_ThreadedChats; // present = state known
     std::unordered_map<std::string, std::unordered_map<std::string, std::string>> m_CurrentThread;
