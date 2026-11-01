@@ -28,9 +28,13 @@ Enabling / Disabling Protocol Support
 -------------------------------------
 The protocols supported by nchat is controlled by the following cmake flags:
 
-    HAS_DUMMY=ON
+    HAS_DUMMY=OFF
     HAS_TELEGRAM=ON
     HAS_WHATSAPP=ON
+
+The dummy protocol is a development/test protocol providing simulated chats;
+it is only included in the application when explicitly enabled with
+`HAS_DUMMY=ON`.
 
 It is possible to enable / disable protocols by passing one or multiple flags
 to cmake:

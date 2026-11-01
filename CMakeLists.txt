@@ -215,8 +215,8 @@ message(STATUS "Shared Libs: ${HAS_SHARED_LIBS}")
 option(HAS_ASAN "ASAN" OFF)
 message(STATUS "ASAN: ${HAS_ASAN}")
 
-# Optional component - Dummy Protocol
-option(HAS_DUMMY "Dummy" ON)
+# Optional component - Dummy Protocol (development/test protocol, opt-in)
+option(HAS_DUMMY "Dummy" OFF)
 message(STATUS "Dummy: ${HAS_DUMMY}")
 
 # Optional component - Telegram
