@@ -24,6 +24,34 @@ static const std::string s_ForbiddenBotId = "Forbidden_0";
 static const std::string s_EmptyBotId = "Emptybot_0";
 static const std::string s_PagerBotId = "Pager_0";
 
+// renamed topic names for the threaded bot fixture, applied by
+// GetThreadedBotThreadInfos (simulates editForumTopic success)
+static std::map<std::string, std::string> s_RenamedTopicNames;
+
+static std::string RenamedTopicName(const std::string& p_TopicId, const std::string& p_Name)
+{
+  auto it = s_RenamedTopicNames.find(p_TopicId);
+  return (it != s_RenamedTopicNames.end()) ? it->second : p_Name;
+}
+
+static std::vector<ChatThreadInfo> GetThreadedBotThreadInfos()
+{
+  std::vector<ChatThreadInfo> threadInfos;
+  ChatThreadInfo threadInfo;
+  threadInfo.id = StrUtil::NumToHex(6);
+  threadInfo.name = RenamedTopicName(threadInfo.id, "Topic six");
+  threadInfo.lastMessageTime = 1237989000000;
+  threadInfos.push_back(threadInfo);
+
+  threadInfo.id = StrUtil::NumToHex(5);
+  threadInfo.name = RenamedTopicName(threadInfo.id, "Topic five");
+  threadInfo.unreadCount = 1;
+  threadInfo.unreadMentionCount = 0;
+  threadInfo.lastMessageTime = 1237992000000;
+  threadInfos.push_back(threadInfo);
+  return threadInfos;
+}
+
 extern "C" DuChat* CreateDuChat()
 {
   return new DuChat();
@@ -526,18 +554,10 @@ void DuChat::PerformRequest(std::shared_ptr<RequestMessage> p_RequestMessage)
 
         if (getThreadsRequest->chatId == s_ThreadedBotId)
         {
-          ChatThreadInfo threadInfo;
-          threadInfo.id = StrUtil::NumToHex(6);
-          threadInfo.name = "Topic six";
-          threadInfo.lastMessageTime = 1237989000000;
-          newThreadsNotify->threads.push_back(threadInfo);
-
-          threadInfo.id = StrUtil::NumToHex(5);
-          threadInfo.name = "Topic five";
-          threadInfo.unreadCount = 1;
-          threadInfo.unreadMentionCount = 0;
-          threadInfo.lastMessageTime = 1237992000000;
-          newThreadsNotify->threads.push_back(threadInfo);
+          for (const ChatThreadInfo& threadInfo : GetThreadedBotThreadInfos())
+          {
+            newThreadsNotify->threads.push_back(threadInfo);
+          }
         }
         else if (getThreadsRequest->chatId == s_ForbiddenBotId)
         {
@@ -613,6 +633,29 @@ void DuChat::PerformRequest(std::shared_ptr<RequestMessage> p_RequestMessage)
         }
 
         m_MessageHandler(newThreadNotify);
+      }
+      break;
+
+    case RenameThreadRequestType:
+      {
+        std::shared_ptr<RenameThreadRequest> renameThreadRequest =
+          std::static_pointer_cast<RenameThreadRequest>(p_RequestMessage);
+        std::shared_ptr<NewThreadsNotify> newThreadsNotify =
+          std::make_shared<NewThreadsNotify>(m_ProfileId);
+        newThreadsNotify->chatId = renameThreadRequest->chatId;
+
+        if (renameThreadRequest->chatId == s_ThreadedBotId)
+        {
+          s_RenamedTopicNames[renameThreadRequest->topicId] = renameThreadRequest->name;
+          newThreadsNotify->threads = GetThreadedBotThreadInfos();
+        }
+        else
+        {
+          // simulates the server rejecting topic renames (ex. missing topic
+          // manage rights); the snapshot is sent unchanged
+        }
+
+        m_MessageHandler(newThreadsNotify);
       }
       break;
 

@@ -949,6 +949,7 @@ This configuration file holds user interface key bindings. Default content:
     prev_page=KEY_PPAGE
     quit=KEY_CTRLQ
     react=\33\163
+    rename_thread=\33\155
     right=KEY_RIGHT
     save=KEY_CTRLR
     select_contact=\33\156

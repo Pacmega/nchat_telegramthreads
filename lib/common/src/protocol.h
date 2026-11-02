@@ -102,6 +102,7 @@ enum MessageType
   GetGroupMembersRequestType,
   GetThreadsRequestType,
   CreateThreadRequestType,
+  RenameThreadRequestType,
   ServiceMessageType,
   NewContactsNotifyType,
   NewChatsNotifyType,
@@ -522,6 +523,15 @@ class CreateThreadRequest : public RequestMessage
 public:
   virtual MessageType GetMessageType() const { return CreateThreadRequestType; }
   std::string chatId;
+  std::string name;
+};
+
+class RenameThreadRequest : public RequestMessage
+{
+public:
+  virtual MessageType GetMessageType() const { return RenameThreadRequestType; }
+  std::string chatId;
+  std::string topicId;
   std::string name;
 };
 

@@ -3677,6 +3677,16 @@ int UiModel::Impl::GetHistoryLines()
   return m_View->GetHistoryLines();
 }
 
+void UiModel::Impl::RenameThread(const std::string& p_ProfileId, const std::string& p_ChatId,
+                                 const std::string& p_TopicId, const std::string& p_Name)
+{
+  std::shared_ptr<RenameThreadRequest> renameThreadRequest = std::make_shared<RenameThreadRequest>();
+  renameThreadRequest->chatId = p_ChatId;
+  renameThreadRequest->topicId = p_TopicId;
+  renameThreadRequest->name = p_Name;
+  SendProtocolRequest(p_ProfileId, renameThreadRequest);
+}
+
 void UiModel::Impl::RequestContacts()
 {
   for (auto& protocol : m_Protocols)
@@ -5292,6 +5302,7 @@ void UiModel::KeyHandler(wint_t p_Key)
 
   static wint_t keyToggleList = UiKeyConfig::GetKey("toggle_list");
   static wint_t keyToggleThreads = UiKeyConfig::GetKey("toggle_threads");
+  static wint_t keyRenameThread = UiKeyConfig::GetKey("rename_thread");
   static wint_t keyToggleTop = UiKeyConfig::GetKey("toggle_top");
   static wint_t keyToggleHelp = UiKeyConfig::GetKey("toggle_help");
   static wint_t keyToggleEmoji = UiKeyConfig::GetKey("toggle_emoji");
@@ -5339,6 +5350,10 @@ void UiModel::KeyHandler(wint_t p_Key)
   {
     std::unique_lock<owned_mutex> lock(m_ModelMutex);
     GetImpl().OnKeyToggleThreads();
+  }
+  else if (p_Key == keyRenameThread)
+  {
+    OnKeyRenameThread();
   }
   else if (p_Key == keyToggleTop)
   {
@@ -6165,6 +6180,68 @@ void UiModel::OnKeySelectMention()
     std::unique_lock<owned_mutex> lock(m_ModelMutex);
     GetImpl().ReinitView();
   }
+}
+
+void UiModel::OnKeyRenameThread()
+{
+  // Pre-req
+  std::string profileId;
+  std::string chatId;
+  std::string topicId;
+  std::string threadName;
+  bool isThreadedChat = false;
+  bool isGeneralThread = false;
+  {
+    std::unique_lock<owned_mutex> lock(m_ModelMutex);
+    if (GetImpl().GetEditMessageActive()) return;
+
+    profileId = GetCurrentChatLocked().first;
+    chatId = GetCurrentChatLocked().second;
+    isThreadedChat = IsThreadedChatLocked(profileId, chatId);
+    if (isThreadedChat)
+    {
+      const std::string currentThreadId = GetCurrentThreadLocked(profileId, chatId);
+      for (const ChatThreadInfo& threadInfo : GetThreadVecLocked(profileId, chatId))
+      {
+        if (threadInfo.id == currentThreadId)
+        {
+          topicId = threadInfo.id;
+          threadName = threadInfo.name;
+          isGeneralThread = threadInfo.isGeneral;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!isThreadedChat)
+  {
+    MessageDialog("Warning", "Rename thread is only supported in threaded chats.", 0.7, 5);
+    return;
+  }
+
+  if (topicId.empty() || isGeneralThread)
+  {
+    MessageDialog("Warning", "The General topic cannot be renamed.", 0.7, 5);
+    return;
+  }
+
+  // Open modal dialog without model mutex held
+  UiDialogParams params(this, "Rename Thread", 0.75, 5);
+  UiTextInputDialog textInputDialog(params, "Name: ", threadName);
+  if (textInputDialog.Run())
+  {
+    const std::string name = textInputDialog.GetInput();
+    if (!name.empty())
+    {
+      std::unique_lock<owned_mutex> lock(m_ModelMutex);
+      GetImpl().RenameThread(profileId, chatId, topicId, name);
+    }
+  }
+
+  // repaint regardless of the outcome, clearing the dialog remains
+  std::unique_lock<owned_mutex> lock(m_ModelMutex);
+  GetImpl().ReinitView();
 }
 
 void UiModel::OnKeyReact()

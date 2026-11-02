@@ -127,6 +127,8 @@ private:
     bool GetThreadsFocus();
     bool IsThreadedChat(const std::string& p_ProfileId, const std::string& p_ChatId);
     std::string GetCurrentThread(const std::string& p_ProfileId, const std::string& p_ChatId);
+    void RenameThread(const std::string& p_ProfileId, const std::string& p_ChatId,
+                      const std::string& p_TopicId, const std::string& p_Name);
     bool GetThreadCreationForbidden(const std::string& p_ProfileId, const std::string& p_ChatId);
 
     std::unordered_map<std::string, ChatMessage>& GetMessages(const std::string& p_ProfileId,
@@ -473,6 +475,7 @@ private:
   void OnKeyExtCall();
   void OnKeyAutoCompose();
   void OnKeySelectMention();
+  void OnKeyRenameThread();
   void OnKeyCut();
   void OnKeyCopy();
   void OnKeyPaste();
