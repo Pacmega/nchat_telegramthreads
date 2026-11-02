@@ -1913,6 +1913,8 @@ void TgChat::Impl::PerformRequest(std::shared_ptr<RequestMessage> p_RequestMessa
           std::static_pointer_cast<RenameThreadRequest>(p_RequestMessage);
         int64_t chatId = StrUtil::NumFromHex<int64_t>(renameThreadRequest->chatId);
         int32_t forumTopicId = StrUtil::NumFromHex<int32_t>(renameThreadRequest->topicId);
+        LOG_DEBUG("rename thread %s/%s \"%s\"", renameThreadRequest->chatId.c_str(),
+                  renameThreadRequest->topicId.c_str(), renameThreadRequest->name.c_str());
 
         auto edit_forum_topic = td::td_api::make_object<td::td_api::editForumTopic>(
           chatId, forumTopicId, renameThreadRequest->name, false /*edit_icon_custom_emoji_*/,
@@ -1928,9 +1930,12 @@ void TgChat::Impl::PerformRequest(std::shared_ptr<RequestMessage> p_RequestMessa
             auto error = td::move_tl_object_as<td::td_api::error>(object);
             LOG_WARNING("rename forum topic failed %s/%s: %d \"%s\"", renameThreadRequest->chatId.c_str(),
                         renameThreadRequest->topicId.c_str(), error->code_, error->message_.c_str());
+            return;
           }
 
-          // on success the rename arrives via updateForumTopicInfo, which
+          LOG_DEBUG("rename forum topic ok %s/%s", renameThreadRequest->chatId.c_str(),
+                    renameThreadRequest->topicId.c_str());
+          // the rename is confirmed server-side via updateForumTopicInfo, which
           // updates the thread snapshot and notifies the ui
         });
       }
