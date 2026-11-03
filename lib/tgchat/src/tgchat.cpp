@@ -1935,8 +1935,14 @@ void TgChat::Impl::PerformRequest(std::shared_ptr<RequestMessage> p_RequestMessa
 
           LOG_DEBUG("rename forum topic ok %s/%s", renameThreadRequest->chatId.c_str(),
                     renameThreadRequest->topicId.c_str());
-          // the rename is confirmed server-side via updateForumTopicInfo, which
-          // updates the thread snapshot and notifies the ui
+
+          // the edit response does not reliably carry a topic update for bot
+          // forum chats (the official clients wait on the broadcast too), so
+          // refetch the thread snapshot to update the ui
+          std::shared_ptr<GetThreadsRequest> getThreadsRequest =
+            std::make_shared<GetThreadsRequest>();
+          getThreadsRequest->chatId = renameThreadRequest->chatId;
+          SendRequest(getThreadsRequest);
         });
       }
       break;
