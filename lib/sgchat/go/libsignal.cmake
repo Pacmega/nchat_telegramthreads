@@ -29,7 +29,7 @@ option(DOWNLOAD_LIBSIGNAL "Download pre-built libsignal_ffi (falls back to build
 # libsignal_ffi.a in the build tree (runtime crash in signal_encrypt_message).
 # This also means the ref cannot be overridden from the command line with
 # -DLIBSIGNAL_BUILD_REF=...; edit this line directly (or use utils/signal-update).
-set(LIBSIGNAL_BUILD_REF "8c62efb522c3692617fa014a6a7077f4a5d6229e")
+set(LIBSIGNAL_BUILD_REF "2bdce1ef65e9b7933c59853d1962d8b1cbf6fb3b")
 
 set(LIBSIGNAL_FFI_DIR ${CMAKE_CURRENT_BINARY_DIR}/libsignal)
 set(LIBSIGNAL_FFI_FILE ${LIBSIGNAL_FFI_DIR}/libsignal_ffi.a)
