@@ -43,7 +43,7 @@ import (
 	"go.mau.fi/mautrix-signal/pkg/signalmeow/types"
 )
 
-var signalDate int = 20261016
+var signalDate int = 20261017
 
 type State int64
 
