@@ -137,6 +137,7 @@
 #include "td/utils/algorithm.h"
 #include "td/utils/base64.h"
 #include "td/utils/emoji.h"
+#include "td/utils/Gzip.h"
 #include "td/utils/HttpUrl.h"
 #include "td/utils/logging.h"
 #include "td/utils/MimeType.h"
@@ -553,7 +554,7 @@ class MessageChatSetTtl final : public MessageContent {
 
 class MessageUnsupported final : public MessageContent {
  public:
-  static constexpr int32 CURRENT_VERSION = 63;
+  static constexpr int32 CURRENT_VERSION = 65;
   int32 version = CURRENT_VERSION;
 
   MessageUnsupported() = default;
@@ -1879,6 +1880,59 @@ class MessageWalletTonConnectRequest final : public MessageContent {
   }
 };
 
+class MessageUnpaidMessagesAllowedByLink final : public MessageContent {
+ public:
+  MessageContentType get_type() const final {
+    return MessageContentType::UnpaidMessagesAllowedByLink;
+  }
+};
+
+class MessageWidget final : public MessageContent {
+ public:
+  int32 width = 0;
+  int32 height = 0;
+  string html;
+  string public_data;
+  int64 public_data_hash = 0;
+  string chat_data;
+  int64 widget_id = 0;
+  FormattedText caption;
+  bool is_copy = false;
+  bool can_query = false;
+  bool background_query = false;
+  bool is_shared = false;  // for sending only
+
+  MessageWidget() = default;
+  MessageWidget(int32 width, int32 height, string &&html, string &&public_data, int64 public_data_hash,
+                string &&chat_data, int64 widget_id, FormattedText &&caption, bool is_copy, bool can_query,
+                bool background_query)
+      : width(width)
+      , height(height)
+      , html(std::move(html))
+      , public_data(std::move(public_data))
+      , public_data_hash(public_data_hash)
+      , chat_data(std::move(chat_data))
+      , widget_id(widget_id)
+      , caption(std::move(caption))
+      , is_copy(is_copy)
+      , can_query(can_query)
+      , background_query(background_query) {
+  }
+
+  MessageContentType get_type() const final {
+    return MessageContentType::Widget;
+  }
+};
+
+// returns empty string if the payload is invalid
+static string get_widget_html(Slice payload) {
+  auto html = gzdecode(payload).as_slice().str();
+  if (!check_utf8(html)) {
+    return string();
+  }
+  return html;
+}
+
 template <class StorerT>
 static void store(const MessageContent *content, StorerT &storer) {
   CHECK(content != nullptr);
@@ -2231,7 +2285,7 @@ static void store(const MessageContent *content, StorerT &storer) {
     }
     case MessageContentType::Poll: {
       const auto *m = static_cast<const MessagePoll *>(content);
-      auto has_caption = !m->caption.text.empty();
+      auto has_caption = !m->caption.is_empty();
       bool has_attached_media = m->attached_media != nullptr;
       BEGIN_STORE_FLAGS();
       STORE_FLAG(has_caption);
@@ -2324,7 +2378,7 @@ static void store(const MessageContent *content, StorerT &storer) {
     case MessageContentType::GiftPremium: {
       const auto *m = static_cast<const MessageGiftPremium *>(content);
       bool has_crypto_amount = !m->crypto_currency.empty();
-      bool has_text = !m->text.text.empty();
+      bool has_text = !m->text.is_empty();
       bool has_days = true;
       BEGIN_STORE_FLAGS();
       STORE_FLAG(has_crypto_amount);
@@ -2413,7 +2467,7 @@ static void store(const MessageContent *content, StorerT &storer) {
       bool has_amount = m->amount > 0;
       bool has_crypto_currency = !m->crypto_currency.empty();
       bool has_crypto_amount = m->crypto_amount > 0;
-      bool has_text = !m->text.text.empty();
+      bool has_text = !m->text.is_empty();
       bool has_days = true;
       BEGIN_STORE_FLAGS();
       STORE_FLAG(m->via_giveaway);
@@ -2574,7 +2628,7 @@ static void store(const MessageContent *content, StorerT &storer) {
     }
     case MessageContentType::PaidMedia: {
       const auto *m = static_cast<const MessagePaidMedia *>(content);
-      bool has_caption = !m->caption.text.empty();
+      bool has_caption = !m->caption.is_empty();
       bool has_payload = !m->payload.empty();
       BEGIN_STORE_FLAGS();
       STORE_FLAG(has_caption);
@@ -2639,7 +2693,7 @@ static void store(const MessageContent *content, StorerT &storer) {
     }
     case MessageContentType::StarGift: {
       const auto *m = static_cast<const MessageStarGift *>(content);
-      bool has_text = !m->text.text.empty();
+      bool has_text = !m->text.is_empty();
       bool has_upgrade_star_count = m->upgrade_star_count != 0;
       bool has_upgrade_message_id = m->upgrade_message_id.is_valid();
       bool has_owner_dialog_id = m->owner_dialog_id.is_valid();
@@ -2717,7 +2771,7 @@ static void store(const MessageContent *content, StorerT &storer) {
       bool has_resale_price = !m->resale_price.is_empty();
       bool has_drop_original_details_star_count = m->drop_original_details_star_count != 0;
       bool has_can_craft_at = m->can_craft_at != 0;
-      bool has_text = !m->text.text.empty();
+      bool has_text = !m->text.is_empty();
       BEGIN_STORE_FLAGS();
       STORE_FLAG(has_transfer_star_count);
       STORE_FLAG(has_can_export_at);
@@ -3101,6 +3155,56 @@ static void store(const MessageContent *content, StorerT &storer) {
       }
       if (has_dapp_name) {
         store(m->dapp_name, storer);
+      }
+      break;
+    }
+    case MessageContentType::UnpaidMessagesAllowedByLink:
+      BEGIN_STORE_FLAGS();
+      END_STORE_FLAGS();
+      break;
+    case MessageContentType::Widget: {
+      const auto *m = static_cast<const MessageWidget *>(content);
+      bool has_width = m->width != 0;
+      bool has_height = m->height != 0;
+      bool has_caption = !m->caption.is_empty();
+      bool has_public_data = !m->public_data.empty();
+      bool has_chat_data = !m->chat_data.empty();
+      bool has_widget_id = m->widget_id != 0;
+      bool has_public_data_hash = m->public_data_hash != 0;
+      BEGIN_STORE_FLAGS();
+      STORE_FLAG(has_width);
+      STORE_FLAG(has_height);
+      STORE_FLAG(has_caption);
+      STORE_FLAG(has_public_data);
+      STORE_FLAG(has_chat_data);
+      STORE_FLAG(has_widget_id);
+      STORE_FLAG(m->is_copy);
+      STORE_FLAG(m->can_query);
+      STORE_FLAG(m->background_query);
+      STORE_FLAG(has_public_data_hash);
+      STORE_FLAG(m->is_shared);
+      END_STORE_FLAGS();
+      if (has_width) {
+        store(m->width, storer);
+      }
+      if (has_height) {
+        store(m->height, storer);
+      }
+      store(m->html, storer);
+      if (has_caption) {
+        store(m->caption, storer);
+      }
+      if (has_public_data) {
+        store(m->public_data, storer);
+      }
+      if (has_chat_data) {
+        store(m->chat_data, storer);
+      }
+      if (has_widget_id) {
+        store(m->widget_id, storer);
+      }
+      if (has_public_data_hash) {
+        store(m->public_data_hash, storer);
       }
       break;
     }
@@ -3606,7 +3710,7 @@ static void parse(unique_ptr<MessageContent> &content, ParserT &parser) {
       }
       parse(m->poll_id, parser);
       if (has_caption) {
-        parse(m->caption, parser);
+        parse_caption(m->caption, parser);
       }
       if (has_attached_media) {
         parse(m->attached_media, parser);
@@ -4031,7 +4135,7 @@ static void parse(unique_ptr<MessageContent> &content, ParserT &parser) {
       END_PARSE_FLAGS();
       parse(m->media, parser);
       if (has_caption) {
-        parse(m->caption, parser);
+        parse_caption(m->caption, parser);
       }
       parse(m->star_count, parser);
       if (has_payload) {
@@ -4620,6 +4724,60 @@ static void parse(unique_ptr<MessageContent> &content, ParserT &parser) {
       content = std::move(m);
       break;
     }
+    case MessageContentType::UnpaidMessagesAllowedByLink: {
+      auto m = make_unique<MessageUnpaidMessagesAllowedByLink>();
+      BEGIN_PARSE_FLAGS();
+      END_PARSE_FLAGS();
+      content = std::move(m);
+      break;
+    }
+    case MessageContentType::Widget: {
+      auto m = make_unique<MessageWidget>();
+      bool has_width;
+      bool has_height;
+      bool has_caption;
+      bool has_public_data;
+      bool has_chat_data;
+      bool has_widget_id;
+      bool has_public_data_hash;
+      BEGIN_PARSE_FLAGS();
+      PARSE_FLAG(has_width);
+      PARSE_FLAG(has_height);
+      PARSE_FLAG(has_caption);
+      PARSE_FLAG(has_public_data);
+      PARSE_FLAG(has_chat_data);
+      PARSE_FLAG(has_widget_id);
+      PARSE_FLAG(m->is_copy);
+      PARSE_FLAG(m->can_query);
+      PARSE_FLAG(m->background_query);
+      PARSE_FLAG(has_public_data_hash);
+      PARSE_FLAG(m->is_shared);
+      END_PARSE_FLAGS();
+      if (has_width) {
+        parse(m->width, parser);
+      }
+      if (has_height) {
+        parse(m->height, parser);
+      }
+      parse(m->html, parser);
+      if (has_caption) {
+        parse_caption(m->caption, parser);
+      }
+      if (has_public_data) {
+        parse(m->public_data, parser);
+      }
+      if (has_chat_data) {
+        parse(m->chat_data, parser);
+      }
+      if (has_widget_id) {
+        parse(m->widget_id, parser);
+      }
+      if (has_public_data_hash) {
+        parse(m->public_data_hash, parser);
+      }
+      content = std::move(m);
+      break;
+    }
 
     default:
       is_bad = true;
@@ -4766,6 +4924,24 @@ InlineMessageContent create_inline_message_content(Td *td, FileId file_id,
       reply_markup = std::move(inline_message->reply_markup_);
       break;
     }
+    case telegram_api::botInlineMessageWidget::ID: {
+      auto inline_message = telegram_api::move_object_as<telegram_api::botInlineMessageWidget>(bot_inline_message);
+      auto html = get_widget_html(inline_message->payload_.as_slice());
+      if (html.empty()) {
+        LOG(ERROR) << "Receive invalid inline widget payload";
+      } else {
+        auto caption =
+            get_message_text(td->user_manager_.get(), inline_message->message_, std::move(inline_message->entities_),
+                             true, false, 0, false, "create_inline_message_content");
+        result.message_content = td::make_unique<MessageWidget>(
+            max(0, inline_message->width_), max(0, inline_message->height_), std::move(html),
+            std::move(inline_message->public_data_), inline_message->public_data_hash_,
+            std::move(inline_message->chat_data_), inline_message->widget_id_, std::move(caption), false, false, false);
+      }
+      result.invert_media = inline_message->invert_media_;
+      reply_markup = std::move(inline_message->reply_markup_);
+      break;
+    }
     default:
       UNREACHABLE();
   }
@@ -4867,6 +5043,14 @@ td_api::object_ptr<td_api::formattedText> extract_input_caption(
       auto input_voice_note = static_cast<td_api::inputMessageVoiceNote *>(input_message_content.get());
       return std::move(input_voice_note->caption_);
     }
+    case td_api::inputMessageWidget::ID: {
+      auto input_widget = static_cast<td_api::inputMessageWidget *>(input_message_content.get());
+      return std::move(input_widget->caption_);
+    }
+    case td_api::inputMessageSharedWidget::ID: {
+      auto input_widget = static_cast<td_api::inputMessageSharedWidget *>(input_message_content.get());
+      return std::move(input_widget->caption_);
+    }
     default:
       return nullptr;
   }
@@ -4889,6 +5073,14 @@ bool extract_input_invert_media(const td_api::object_ptr<td_api::InputMessageCon
     case td_api::inputMessageVideo::ID: {
       auto input_video = static_cast<const td_api::inputMessageVideo *>(input_message_content.get());
       return input_video->show_caption_above_media_;
+    }
+    case td_api::inputMessageWidget::ID: {
+      auto input_widget = static_cast<const td_api::inputMessageWidget *>(input_message_content.get());
+      return input_widget->show_caption_above_media_;
+    }
+    case td_api::inputMessageSharedWidget::ID: {
+      auto input_widget = static_cast<const td_api::inputMessageSharedWidget *>(input_message_content.get());
+      return input_widget->show_caption_above_media_;
     }
     default:
       return false;
@@ -5023,7 +5215,7 @@ static Result<InputMessageContent> create_input_message_content(
       }
       vector<MessageExtendedMedia> extended_media;
       for (auto &paid_media : input_paid_media->paid_media_) {
-        TRY_RESULT(media, MessageExtendedMedia::get_message_extended_media(td, std::move(paid_media), dialog_id));
+        TRY_RESULT(media, MessageExtendedMedia::get_message_extended_media(td, std::move(paid_media), dialog_id, true));
         if (media.is_empty()) {
           return Status::Error(400, "Paid media must be non-empty");
         }
@@ -5280,6 +5472,51 @@ static Result<InputMessageContent> create_input_message_content(
       content = td::make_unique<MessageToDoList>(std::move(to_do_list), vector<ToDoCompletion>());
       break;
     }
+    case td_api::inputMessageWidget::ID: {
+      auto input_widget = static_cast<td_api::inputMessageWidget *>(input_message_content.get());
+      if (!is_bot) {
+        return Status::Error(400, "Only bots can send widget messages");
+      }
+      if (input_widget->width_ < 0 || input_widget->height_ < 0) {
+        return Status::Error(400, "Invalid widget size specified");
+      }
+      if (!clean_input_string(input_widget->html_)) {
+        return Status::Error(400, "Widget HTML code must be encoded in UTF-8");
+      }
+      if (input_widget->html_.empty()) {
+        return Status::Error(400, "Widget HTML code must be non-empty");
+      }
+      if (!clean_input_string(input_widget->public_data_)) {
+        return Status::Error(400, "Widget public data must be encoded in UTF-8");
+      }
+      if (!clean_input_string(input_widget->chat_data_)) {
+        return Status::Error(400, "Widget chat data must be encoded in UTF-8");
+      }
+      invert_media = input_widget->show_caption_above_media_ && !is_secret;
+      auto widget =
+          td::make_unique<MessageWidget>(input_widget->width_, input_widget->height_, std::move(input_widget->html_),
+                                         std::move(input_widget->public_data_), 0, std::move(input_widget->chat_data_),
+                                         0, std::move(caption), false, input_widget->allow_queries_, false);
+      widget->is_shared = input_widget->is_shared_;
+      content = std::move(widget);
+      break;
+    }
+    case td_api::inputMessageSharedWidget::ID: {
+      auto input_widget = static_cast<td_api::inputMessageSharedWidget *>(input_message_content.get());
+      if (!is_bot) {
+        return Status::Error(400, "Only bots can send widget messages");
+      }
+      if (input_widget->widget_id_ == 0) {
+        return Status::Error(400, "Invalid widget identifier specified");
+      }
+      if (!clean_input_string(input_widget->chat_data_)) {
+        return Status::Error(400, "Widget chat data must be encoded in UTF-8");
+      }
+      invert_media = input_widget->show_caption_above_media_ && !is_secret;
+      content = td::make_unique<MessageWidget>(0, 0, string(), string(), 0, std::move(input_widget->chat_data_),
+                                               input_widget->widget_id_, std::move(caption), false, false, false);
+      break;
+    }
     default:
       UNREACHABLE();
   }
@@ -5405,6 +5642,9 @@ Result<InputMessageContent> get_input_message_content(
       input_file = std::move(voice_note->voice_note_);
       break;
     }
+    case td_api::inputMessageForwarded::ID:
+      // must be processed by the caller if supported
+      return Status::Error(400, "Unallowed message content specified");
     default:
       break;
   }
@@ -5637,6 +5877,7 @@ bool can_message_content_have_input_media(const Td *td, const MessageContent *co
     case MessageContentType::ChatJoinedViaCommunity:
     case MessageContentType::GramTransfer:
     case MessageContentType::WalletTonConnectRequest:
+    case MessageContentType::UnpaidMessagesAllowedByLink:
       return false;
     case MessageContentType::Animation:
     case MessageContentType::Audio:
@@ -5655,6 +5896,7 @@ bool can_message_content_have_input_media(const Td *td, const MessageContent *co
     case MessageContentType::Video:
     case MessageContentType::VideoNote:
     case MessageContentType::VoiceNote:
+    case MessageContentType::Widget:
       return true;
     default:
       UNREACHABLE();
@@ -5814,6 +6056,8 @@ SecretInputMedia get_message_content_secret_input_media(
     case MessageContentType::ChatJoinedViaCommunity:
     case MessageContentType::GramTransfer:
     case MessageContentType::WalletTonConnectRequest:
+    case MessageContentType::UnpaidMessagesAllowedByLink:
+    case MessageContentType::Widget:
       break;
     default:
       UNREACHABLE();
@@ -5974,6 +6218,14 @@ static InputMedia get_message_content_input_media_impl(
       const auto *m = static_cast<const MessageVoiceNote *>(content);
       return td->voice_notes_manager_->get_input_media(m->file_id, std::move(input_file), ttl.get_input_ttl());
     }
+    case MessageContentType::Widget: {
+      const auto *m = static_cast<const MessageWidget *>(content);
+      if (m->widget_id != 0) {
+        return telegram_api::make_object<telegram_api::inputMediaWidgetId>(0, m->widget_id, m->chat_data);
+      }
+      return telegram_api::make_object<telegram_api::inputMediaWidget>(
+          0, m->can_query, m->is_shared, m->width, m->height, m->html, m->public_data, m->chat_data);
+    }
     case MessageContentType::Text:
     case MessageContentType::Unsupported:
     case MessageContentType::ChatCreate:
@@ -6052,6 +6304,7 @@ static InputMedia get_message_content_input_media_impl(
     case MessageContentType::ChatJoinedViaCommunity:
     case MessageContentType::GramTransfer:
     case MessageContentType::WalletTonConnectRequest:
+    case MessageContentType::UnpaidMessagesAllowedByLink:
       break;
     default:
       UNREACHABLE();
@@ -6065,11 +6318,7 @@ InputMedia get_message_content_multi_input_media(
   switch (content->get_type()) {
     case MessageContentType::PaidMedia: {
       const auto *m = static_cast<const MessagePaidMedia *>(content);
-      int32 flags = 0;
-      if (!m->payload.empty()) {
-        flags |= telegram_api::inputMediaPaidMedia::PAYLOAD_MASK;
-      }
-      return telegram_api::make_object<telegram_api::inputMediaPaidMedia>(flags, m->star_count, std::move(input_media),
+      return telegram_api::make_object<telegram_api::inputMediaPaidMedia>(0, m->star_count, std::move(input_media),
                                                                           m->payload);
     }
     case MessageContentType::Poll: {
@@ -6163,7 +6412,7 @@ telegram_api::object_ptr<telegram_api::InputMedia> get_message_content_input_med
   if (text->web_page_url.empty()) {
     return nullptr;
   }
-  bool is_optional = !text->text.text.empty();
+  bool is_optional = !text->text.is_empty();
   return telegram_api::make_object<telegram_api::inputMediaWebPage>(0, text->force_large_media, text->force_small_media,
                                                                     is_optional, text->web_page_url);
 }
@@ -6259,6 +6508,7 @@ void delete_message_content_thumbnail(Td *td, MessageContent *content, int32 med
     case MessageContentType::Story:
     case MessageContentType::Venue:
     case MessageContentType::VoiceNote:
+    case MessageContentType::Widget:
     case MessageContentType::Text:
     case MessageContentType::Unsupported:
     case MessageContentType::ChatCreate:
@@ -6338,6 +6588,7 @@ void delete_message_content_thumbnail(Td *td, MessageContent *content, int32 med
     case MessageContentType::ChatJoinedViaCommunity:
     case MessageContentType::GramTransfer:
     case MessageContentType::WalletTonConnectRequest:
+    case MessageContentType::UnpaidMessagesAllowedByLink:
       break;
     default:
       UNREACHABLE();
@@ -6540,6 +6791,11 @@ Status can_send_message_content(DialogId dialog_id, const MessageContent *conten
         return Status::Error(400, "User restricted receiving of voice note messages");
       }
       break;
+    case MessageContentType::Widget:
+      if (!permissions.can_use_inline_bots()) {
+        return Status::Error(400, "Not enough rights to send widgets to the chat");
+      }
+      break;
     case MessageContentType::Unsupported:
       break;
     case MessageContentType::None:
@@ -6617,6 +6873,7 @@ Status can_send_message_content(DialogId dialog_id, const MessageContent *conten
     case MessageContentType::ChatJoinedViaCommunity:
     case MessageContentType::GramTransfer:
     case MessageContentType::WalletTonConnectRequest:
+    case MessageContentType::UnpaidMessagesAllowedByLink:
       UNREACHABLE();
   }
   return Status::OK();
@@ -6639,7 +6896,8 @@ bool can_forward_message_content(const Td *td, const MessageContent *content, bo
   }
   if (is_copy) {
     if (content_type == MessageContentType::Giveaway || content_type == MessageContentType::GiveawayWinners ||
-        content_type == MessageContentType::PaidMedia || content_type == MessageContentType::Invoice) {
+        content_type == MessageContentType::PaidMedia || content_type == MessageContentType::Invoice ||
+        content_type == MessageContentType::Widget) {
       return false;
     }
     if (content_type == MessageContentType::Poll &&
@@ -6746,6 +7004,7 @@ static int32 get_message_content_media_index_mask(const MessageContent *content,
     case MessageContentType::Story:
     case MessageContentType::Unsupported:
     case MessageContentType::Venue:
+    case MessageContentType::Widget:
     case MessageContentType::ChatCreate:
     case MessageContentType::ChatChangeTitle:
     case MessageContentType::ChatDeletePhoto:
@@ -6822,6 +7081,7 @@ static int32 get_message_content_media_index_mask(const MessageContent *content,
     case MessageContentType::ChatJoinedViaCommunity:
     case MessageContentType::GramTransfer:
     case MessageContentType::WalletTonConnectRequest:
+    case MessageContentType::UnpaidMessagesAllowedByLink:
       return 0;
     default:
       UNREACHABLE();
@@ -7314,6 +7574,10 @@ vector<UserId> get_message_content_min_user_ids(const Td *td, const MessageConte
     case MessageContentType::GramTransfer:
       break;
     case MessageContentType::WalletTonConnectRequest:
+      break;
+    case MessageContentType::UnpaidMessagesAllowedByLink:
+      break;
+    case MessageContentType::Widget:
       break;
     default:
       UNREACHABLE();
@@ -7934,6 +8198,8 @@ static void merge_message_contents(Td *td, const MessageContent *old_content, Me
     case MessageContentType::ChatJoinedViaCommunity:
     case MessageContentType::GramTransfer:
     case MessageContentType::WalletTonConnectRequest:
+    case MessageContentType::UnpaidMessagesAllowedByLink:
+    case MessageContentType::Widget:
       break;
     default:
       UNREACHABLE();
@@ -8117,6 +8383,8 @@ bool merge_message_content_file_id(Td *td, MessageContent *message_content, File
     case MessageContentType::ChatJoinedViaCommunity:
     case MessageContentType::GramTransfer:
     case MessageContentType::WalletTonConnectRequest:
+    case MessageContentType::UnpaidMessagesAllowedByLink:
+    case MessageContentType::Widget:
       LOG(ERROR) << "Receive new file " << new_file_id << " in a sent message of the type " << content_type;
       break;
     default:
@@ -8987,6 +9255,22 @@ void compare_message_contents(Td *td, const MessageContent *old_content, const M
       }
       break;
     }
+    case MessageContentType::UnpaidMessagesAllowedByLink:
+      break;
+    case MessageContentType::Widget: {
+      const auto *lhs = static_cast<const MessageWidget *>(old_content);
+      const auto *rhs = static_cast<const MessageWidget *>(new_content);
+      if (lhs->width != rhs->width || lhs->height != rhs->height || lhs->html != rhs->html ||
+          lhs->public_data != rhs->public_data || lhs->chat_data != rhs->chat_data ||
+          lhs->widget_id != rhs->widget_id || lhs->caption != rhs->caption || lhs->is_copy != rhs->is_copy ||
+          lhs->can_query != rhs->can_query || lhs->background_query != rhs->background_query ||
+          lhs->is_shared != rhs->is_shared) {
+        need_update = true;
+      } else if (lhs->public_data_hash != rhs->public_data_hash) {
+        is_content_changed = true;
+      }
+      break;
+    }
     default:
       UNREACHABLE();
       break;
@@ -9244,7 +9528,7 @@ void register_message_content(Td *td, const MessageContent *content, MessageFull
       return;
     }
     // don't forget to update reregister_message_content, register_reply_message_content,
-    // register_quick_reply_message_content, register_ephemeral_message_content
+    // register_quick_reply_message_content, register_welcome_message_content
     default:
       return;
   }
@@ -9983,12 +10267,12 @@ unique_ptr<MessageContent> get_message_content(Td *td, FormattedText message,
   switch (media_ptr == nullptr ? telegram_api::messageMediaEmpty::ID : media_ptr->get_id()) {
     case telegram_api::messageMediaEmpty::ID:
       if (rich_message != nullptr) {
-        if (!message.text.empty()) {
+        if (!message.is_empty()) {
           LOG(ERROR) << "Receive both text and rich text in a message from " << owner_dialog_id;
         }
         return td::make_unique<MessageRichText>(RichMessage(td, std::move(rich_message), owner_dialog_id));
       }
-      if (message.text.empty()) {
+      if (message.is_empty()) {
         LOG(ERROR) << "Receive empty message text and media from " << source;
       }
       if (disable_web_page_preview != nullptr && !get_first_url(message).empty()) {
@@ -10317,6 +10601,18 @@ unique_ptr<MessageContent> get_message_content(Td *td, FormattedText message,
       return td::make_unique<MessageToDoList>(ToDoList(td->user_manager_.get(), std::move(media->todo_), message_date),
                                               std::move(completions));
     }
+    case telegram_api::messageMediaWidget::ID: {
+      auto media = telegram_api::move_object_as<telegram_api::messageMediaWidget>(media_ptr);
+      auto html = get_widget_html(media->payload_.as_slice());
+      if (html.empty()) {
+        LOG(ERROR) << "Receive invalid widget payload";
+        return make_unique<MessageUnsupported>();
+      }
+      return td::make_unique<MessageWidget>(max(0, media->width_), max(0, media->height_), std::move(html),
+                                            std::move(media->public_data_), media->public_data_hash_,
+                                            std::move(media->chat_data_), media->widget_id_, std::move(message),
+                                            media->is_copy_, media->can_query_, media->background_query_);
+    }
     case telegram_api::messageMediaUnsupported::ID:
       return make_unique<MessageUnsupported>();
     case telegram_api::messageMediaVideoStream::ID:
@@ -10519,6 +10815,11 @@ unique_ptr<MessageContent> dup_message_content(Td *td, DialogId dialog_id, const
       }
       return result;
     }
+    case MessageContentType::Unsupported:
+      if (type == MessageContentDupType::SendViaBot || type == MessageContentDupType::SendQuickReply) {
+        return make_unique<MessageUnsupported>();
+      }
+      return nullptr;
     case MessageContentType::Venue:
       return make_unique<MessageVenue>(*static_cast<const MessageVenue *>(content));
     case MessageContentType::Video: {
@@ -10553,11 +10854,22 @@ unique_ptr<MessageContent> dup_message_content(Td *td, DialogId dialog_id, const
       }
       return std::move(result);
     }
-    case MessageContentType::Unsupported:
-      if (type == MessageContentDupType::SendViaBot || type == MessageContentDupType::SendQuickReply) {
-        return make_unique<MessageUnsupported>();
+    case MessageContentType::Widget: {
+      if (type == MessageContentDupType::Copy || type == MessageContentDupType::ServerCopy) {
+        return nullptr;
       }
-      return nullptr;
+      auto result = make_unique<MessageWidget>(*static_cast<const MessageWidget *>(content));
+      if (replace_caption) {
+        result->caption = std::move(copy_options.new_caption);
+      }
+      if (type == MessageContentDupType::Forward) {
+        result->chat_data.clear();
+        result->is_copy = true;
+        result->can_query = false;
+        result->background_query = false;
+      }
+      return std::move(result);
+    }
     case MessageContentType::ChatCreate:
     case MessageContentType::ChatChangeTitle:
     case MessageContentType::ChatChangePhoto:
@@ -10632,6 +10944,7 @@ unique_ptr<MessageContent> dup_message_content(Td *td, DialogId dialog_id, const
     case MessageContentType::ChatJoinedViaCommunity:
     case MessageContentType::GramTransfer:
     case MessageContentType::WalletTonConnectRequest:
+    case MessageContentType::UnpaidMessagesAllowedByLink:
       return nullptr;
     default:
       UNREACHABLE();
@@ -10712,6 +11025,7 @@ unique_ptr<MessageContent> get_action_message_content(Td *td, tl_object_ptr<tele
       case telegram_api::messageActionPollAppendAnswer::ID:
       case telegram_api::messageActionPollDeleteAnswer::ID:
       case telegram_api::messageActionGramTransfer::ID:
+      case telegram_api::messageActionNoPaidMessagesTokenUsed::ID:
         // ok
         break;
       case telegram_api::messageActionBotAllowed::ID:
@@ -11541,6 +11855,8 @@ unique_ptr<MessageContent> get_action_message_content(Td *td, tl_object_ptr<tele
           action->session_id_, action->expires_, std::move(action->topic_), std::move(action->trace_id_),
           std::move(action->dapp_name_), action->accepted_, action->declined_);
     }
+    case telegram_api::messageActionNoPaidMessagesTokenUsed::ID:
+      return td::make_unique<MessageUnpaidMessagesAllowedByLink>();
     default:
       UNREACHABLE();
   }
@@ -12093,14 +12409,22 @@ td_api::object_ptr<td_api::MessageContent> get_message_content_object(
       } else if (m->is_prepaid_upgrade && is_outgoing) {
         sender_dialog_id = DialogId();
       }
+      bool can_be_deleted = false;
+      if (star_gift_id.is_valid() && m->star_gift.can_be_deleted() && !m->was_converted && !m->was_upgraded &&
+          !m->was_refunded && m->convert_star_count == 0) {
+        auto owner_dialog_id = star_gift_id.get_dialog_id(td);
+        can_be_deleted = td->auth_manager_->is_bot() || owner_dialog_id == td->dialog_manager_->get_my_dialog_id() ||
+                         (owner_dialog_id.get_type() == DialogType::Channel &&
+                          td->chat_manager_->get_channel_status(owner_dialog_id.get_channel_id()).is_creator());
+      }
       return td_api::make_object<td_api::messageGift>(
           m->star_gift.get_gift_object(td),
           sender_dialog_id == DialogId() ? nullptr
                                          : get_message_sender_object(td, sender_dialog_id, "messageGift sender"),
           get_message_sender_object(td, receiver_dialog_id, "messageGift receiver"), star_gift_id.get_star_gift_id(),
           get_text_object(m->text), m->gift_num, m->convert_star_count, m->upgrade_star_count, m->is_upgrade_separate,
-          m->is_auction_acquired, m->name_hidden, m->is_saved, m->is_prepaid_upgrade, m->can_upgrade, m->was_converted,
-          m->was_upgraded, m->was_refunded,
+          m->is_auction_acquired, m->name_hidden, m->is_saved, m->is_prepaid_upgrade, m->can_upgrade, can_be_deleted,
+          m->was_converted, m->was_upgraded, m->was_refunded,
           StarGiftId(m->upgrade_message_id.get_server_message_id()).get_star_gift_id(), m->prepaid_upgrade_hash);
     }
     case MessageContentType::StarGiftUnique: {
@@ -12375,6 +12699,14 @@ td_api::object_ptr<td_api::MessageContent> get_message_content_object(
       return td_api::make_object<td_api::messageTonConnectRequest>(m->session_id, std::move(state), m->dapp_name,
                                                                    m->topic, m->trace_id);
     }
+    case MessageContentType::UnpaidMessagesAllowedByLink:
+      return td_api::make_object<td_api::messageUnpaidMessagesAllowedByLink>();
+    case MessageContentType::Widget: {
+      const auto *m = static_cast<const MessageWidget *>(content);
+      return td_api::make_object<td_api::messageWidget>(m->width, m->height, m->html, m->public_data, m->chat_data,
+                                                        m->widget_id, get_text_object(m->caption), invert_media,
+                                                        m->is_copy, m->can_query, m->background_query);
+    }
     default:
       UNREACHABLE();
       return nullptr;
@@ -12552,6 +12884,8 @@ const FormattedText *get_message_content_caption(const MessageContent *content) 
       return &static_cast<const MessageVideo *>(content)->caption;
     case MessageContentType::VoiceNote:
       return &static_cast<const MessageVoiceNote *>(content)->caption;
+    case MessageContentType::Widget:
+      return &static_cast<const MessageWidget *>(content)->caption;
     default:
       return nullptr;
   }
@@ -13242,6 +13576,8 @@ string get_message_content_search_text(const Td *td, const MessageContent *conte
       const auto *to_do_list = static_cast<const MessageToDoList *>(content);
       return to_do_list->list.get_search_text();
     }
+    case MessageContentType::Widget:
+      return static_cast<const MessageWidget *>(content)->caption.text;
     case MessageContentType::Contact:
     case MessageContentType::Game:
     case MessageContentType::LiveLocation:
@@ -13323,6 +13659,7 @@ string get_message_content_search_text(const Td *td, const MessageContent *conte
     case MessageContentType::ChatJoinedViaCommunity:
     case MessageContentType::GramTransfer:
     case MessageContentType::WalletTonConnectRequest:
+    case MessageContentType::UnpaidMessagesAllowedByLink:
       return string();
     default:
       UNREACHABLE();
@@ -13363,6 +13700,38 @@ void extract_message_content_authentication_codes(const MessageContent *content,
     default:
       return;
   }
+}
+
+void update_message_content_widget_data(MessageContent *content, string &&public_data, int64 public_data_hash,
+                                        string &&chat_data, bool update_chat_data, bool &is_content_changed,
+                                        bool &need_update) {
+  CHECK(content != nullptr);
+  if (content->get_type() != MessageContentType::Widget) {
+    if (content->get_type() != MessageContentType::Unsupported) {
+      LOG(ERROR) << "Receive widget data for a message of type " << content->get_type();
+    }
+    return;
+  }
+  auto *m = static_cast<MessageWidget *>(content);
+  if (m->public_data != public_data) {
+    m->public_data = std::move(public_data);
+    need_update = true;
+  }
+  if (update_chat_data && m->chat_data != chat_data) {
+    m->chat_data = std::move(chat_data);
+    need_update = true;
+  }
+  if (m->public_data_hash != public_data_hash) {
+    m->public_data_hash = public_data_hash;
+    is_content_changed = true;
+  }
+}
+
+std::pair<string, int64> get_message_content_widget_public_data(const MessageContent *content) {
+  CHECK(content != nullptr);
+  CHECK(content->get_type() == MessageContentType::Widget);
+  const auto *m = static_cast<const MessageWidget *>(content);
+  return {m->public_data, m->public_data_hash};
 }
 
 bool update_message_content_extended_media(
@@ -13932,6 +14301,10 @@ void add_message_content_dependencies(Dependencies &dependencies, const MessageC
       break;
     case MessageContentType::WalletTonConnectRequest:
       break;
+    case MessageContentType::UnpaidMessagesAllowedByLink:
+      break;
+    case MessageContentType::Widget:
+      break;
     default:
       UNREACHABLE();
       break;
@@ -14016,7 +14389,7 @@ void on_dialog_used(TopDialogCategory category, DialogId dialog_id, int32 date) 
 
 void update_used_hashtags(Td *td, const MessageContent *content) {
   const FormattedText *text = get_message_content_text(content);
-  if (text == nullptr || text->text.empty()) {
+  if (text == nullptr || text->is_empty()) {
     const auto *rich_message = get_message_content_rich_message(content);
     if (rich_message != nullptr) {
       for (const auto &hashtag : rich_message->get_hashtags()) {

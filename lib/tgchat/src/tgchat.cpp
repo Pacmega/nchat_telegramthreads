@@ -51,7 +51,7 @@
 // For development testing of sponsored messages only
 // #define SIMULATED_SPONSORED_MESSAGES
 
-static const int s_TdlibDate = 20261009;
+static const int s_TdlibDate = 20261108;
 
 // Maximum number of topics fetched in one getForumTopics request
 static const int32_t s_ForumTopicsLimit = 100;
